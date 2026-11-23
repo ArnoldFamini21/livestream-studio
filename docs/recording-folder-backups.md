@@ -62,6 +62,20 @@ the studio says so; save that take to the folder afterwards. Without a folder,
 the studio asks the browser to keep its storage persistent and warns before
 recording when browser storage has less than about two hours of room.
 
+## Reopen a take checklist
+
+Open **Recordings**, expand **Take checklist** in the recording folder section,
+and select a take. Reconnect the recording folder first if the browser has
+dropped access. The checklist shows the latest 20 takes found for this studio,
+including tracks expected when recording began and tracks that arrived later.
+**Verified** means the studio checked the file size after saving it and added
+the file to the take manifest.
+
+For a missing guest track, use **Request tracks from [name]** when that guest is admitted to the
+studio. The guest must use the browser profile that still holds the take's
+recording backup. The retry asks that guest for the selected take only. After a
+host reload, it continues from completed parts in the original take folder.
+
 ## Browser storage is separate
 
 **Save to folder** makes a copy after recording. Without a recording folder,

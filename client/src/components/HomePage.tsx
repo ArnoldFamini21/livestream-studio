@@ -5,6 +5,7 @@ import QRCode from 'qrcode';
 import { GoogleDriveStorage } from './GoogleDriveStorage.tsx';
 import { StudioIcon } from './StudioIcon.tsx';
 import { WorkspaceDialog } from './WorkspaceDialog.tsx';
+import { PremiereSetup } from './PremiereSetup.tsx';
 import '../styles/workspace.css';
 import { buildStudioCalendarInvite, type AccountUser, type BrandKitCatalogEntry, type RecordingCatalogEntry, type RoomRegistrantListResponse, type WorkspaceStudioCatalogEntry, type WorkspaceTeamCatalogMember } from '@studio/shared';
 import {
@@ -371,6 +372,7 @@ export function HomePage() {
   const [scheduledQrDataUrl, setScheduledQrDataUrl] = useState('');
   const [scheduledQrError, setScheduledQrError] = useState('');
   const [savedRoomCopiedId, setSavedRoomCopiedId] = useState<string | null>(null);
+  const [premiereRoom, setPremiereRoom] = useState<SavedScheduledStudio | null>(null);
   const [savedHostCopiedId, setSavedHostCopiedId] = useState<string | null>(null);
   const [savedQrDownloadingId, setSavedQrDownloadingId] = useState<string | null>(null);
   const [registrantsDownloadingId, setRegistrantsDownloadingId] = useState<string | null>(null);
@@ -1580,6 +1582,11 @@ export function HomePage() {
                           </>
                         )}
                         <details className="studio-row-more"><summary aria-label={`More actions for ${room.name}`}><StudioIcon name="more" /></summary><div>
+                        {room.hostToken && room.registrationEnabled && Date.parse(room.scheduledFor || '') > Date.now() && (
+                          <button className="ws-savedRoomAction" style={styles.savedRoomAction} onClick={() => setPremiereRoom(room)}>
+                            Set up premiere
+                          </button>
+                        )}
                         <button
                           className="ws-savedRoomAction" style={styles.savedRoomAction}
                           onClick={() => emailGuestInvite(room)}
@@ -2180,6 +2187,13 @@ export function HomePage() {
             {scheduledRoom.registrationEnabled && (
               <p className="ws-modalSchedule" style={styles.modalSchedule}>Guest registration is on. You can export registrants from Your Studios.</p>
             )}
+            {privateWatch && scheduledRoom.hostToken && Date.parse(scheduledRoom.scheduledFor || '') > Date.now() && (
+              <button type="button" className="workspace-secondary" onClick={() => {
+                const studio = scheduledRoom;
+                closeModal();
+                setPremiereRoom(studio);
+              }}>Set up premiere</button>
+            )}
 
             <div className="ws-linkBox" style={styles.linkBox}>
               <input
@@ -2256,6 +2270,9 @@ export function HomePage() {
           </div>
         </WorkspaceDialog>
       )}
+      {premiereRoom?.hostToken && <WorkspaceDialog title="Set up premiere" onClose={() => setPremiereRoom(null)}>
+        <PremiereSetup key={premiereRoom.id} roomId={premiereRoom.id} hostToken={premiereRoom.hostToken} inviteBase={INVITE_BASE_URL} copy={writeClipboardText} />
+      </WorkspaceDialog>}
     </div>
   );
 }

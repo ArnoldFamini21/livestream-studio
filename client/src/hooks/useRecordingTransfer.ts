@@ -17,7 +17,7 @@ import {
 } from '../utils/recordingTransferSession.ts';
 import { RECORDING_TRANSFER_CHANNEL_LABEL } from '../utils/recordingTransferProtocol.ts';
 import { listTransferableRecordings, markRecoveredRecordingDelivered } from '../utils/recordingRecovery.ts';
-import { getTrackFileName } from '../utils/recordingTrackStore.ts';
+import { openGuestTrackSink } from '../utils/recordingTakeChecklist.ts';
 import type { TakeFolder } from '../utils/recordingTakeFolder.ts';
 import {
   invitesToRevoke,
@@ -64,7 +64,7 @@ interface UseRecordingTransferOptions {
   hostOptions: RecordingTransferSignalOptions;
   /** Host: the take folder a received track belongs to. */
   getTakeFolder: (sessionId: string) => Promise<TakeFolder>;
-  onTrackReceived?: (entry: ReceivedTrackEntry) => void;
+  onTrackReceived?: (entry: ReceivedTrackEntry) => void | Promise<void>;
   /** Guest: live tracks of this page's recorder. */
   getLocalTracks: () => TransferSourceTrack[];
   localTracksVersion: number;
@@ -107,23 +107,10 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
   const [summaries, setSummaries] = useState<ParticipantTransferSummary[]>([]);
   const hostPeersRef = useRef(new Map<string, { pc: RTCPeerConnection; transferId: string; receiver?: TransferReceiver }>());
   const invitedRef = useRef(new Map<string, string>());
+  const retryScopesRef = useRef(new Map<string, string>());
   const registry = useMemo(() => new HostTransferRegistry(async ({ participantId, participantName, track }): Promise<ReceivedTrackSink> => {
     const take = await optionsRef.current.getTakeFolder(track.sessionId);
-    // One folder per participant, even when two guests share a display name.
-    const folder = take.participantFolder(participantId, participantName);
-    const writer = await take.createTrackWriter(folder, getTrackFileName(track.label, track.mimeType));
-    return {
-      write: (bytes) => writer.append(new Blob([bytes as Uint8Array<ArrayBuffer>])),
-      accepted: () => writer.acceptedBytes(),
-      async finish({ header, totalBytes }) {
-        const file = await writer.finish({
-          mimeType: track.mimeType,
-          ...(header ? { header: new Blob([header as Uint8Array<ArrayBuffer>]) } : {}),
-        });
-        if (file.size < totalBytes) throw new Error(`Only ${file.size} of ${totalBytes} bytes were saved.`);
-        return { bytes: file.size, path: writer.path, file };
-      },
-    };
+    return openGuestTrackSink(take, participantId, participantName, track);
   }, (entry) => optionsRef.current.onTrackReceived?.(entry)), []);
 
   useEffect(() => registry.subscribe(() => setSummaries(registry.summaries())), [registry]);
@@ -138,9 +125,11 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
 
   /** The take the last inviteAll announced, for invites sent later (a resumed seat). */
   const currentSessionRef = useRef<string | undefined>(undefined);
-  const sendInvite = useCallback((participantId: string, sessionId?: string) => {
+  const sendInvite = useCallback((participantId: string, sessionId?: string, retrySessionOnly = false) => {
     const transferId = newTransferId();
     invitedRef.current.set(participantId, sessionId || '');
+    if (retrySessionOnly && sessionId) retryScopesRef.current.set(participantId, sessionId);
+    else retryScopesRef.current.delete(participantId);
     send({
       type: 'recording-transfer-signal',
       payload: {
@@ -148,7 +137,7 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
         transferId,
         kind: 'invite',
         ...(sessionId ? { sessionId } : {}),
-        options: optionsRef.current.hostOptions,
+        options: { ...optionsRef.current.hostOptions, ...(retrySessionOnly ? { retrySessionOnly: true } : {}) },
       },
     });
   }, [send]);
@@ -163,12 +152,21 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
     }
   }, [sendInvite]);
 
+  const retryGuestTake = useCallback((sessionId: string, participantId: string): boolean => {
+    if (!optionsRef.current.isOperator || !optionsRef.current.hostReceiving
+        || !isTransferParticipant(optionsRef.current.participants.get(participantId))) return false;
+    closeHostPeer(participantId);
+    sendInvite(participantId, sessionId, true);
+    return true;
+  }, [closeHostPeer, sendInvite]);
+
   // Invite participants who join (or are admitted) while the folder is connected (and on connect).
   useEffect(() => {
     if (!isOperator || !hostReceiving) return;
     for (const id of participantsToInvite(participants.values(), invitedRef.current)) sendInvite(id);
     for (const id of invitesToRevoke(participants, [...invitedRef.current.keys()])) {
       invitedRef.current.delete(id);
+      retryScopesRef.current.delete(id);
       closeHostPeer(id);
       // Sent back to the green room: tell their page to stop sending.
       if (participants.has(id)) {
@@ -185,6 +183,7 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
       closeHostPeer(id);
     }
     invitedRef.current.clear();
+    retryScopesRef.current.clear();
   }, [closeHostPeer, hostReceiving, isOperator, send]);
 
   const acceptOffer = useCallback(async (payload: RecordingTransferSignalPayload) => {
@@ -196,6 +195,7 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
       send({ type: 'recording-transfer-signal', payload: { targetParticipantId: participantId, transferId: payload.transferId, kind: 'hangup' } });
       return;
     }
+    const allowedSessionId = retryScopesRef.current.get(participantId);
     closeHostPeer(participantId);
     const pc = new RTCPeerConnection(await getIceConfiguration());
     const peer: { pc: RTCPeerConnection; transferId: string; receiver?: TransferReceiver } = { pc, transferId: payload.transferId };
@@ -203,7 +203,7 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
     pc.addEventListener('datachannel', (event) => {
       if (event.channel.label !== RECORDING_TRANSFER_CHANNEL_LABEL) return;
       peer.receiver?.close();
-      peer.receiver = createTransferReceiver({ channel: event.channel as unknown as TransferChannel, participantId, registry });
+      peer.receiver = createTransferReceiver({ channel: event.channel as unknown as TransferChannel, participantId, registry, allowedSessionId });
       event.channel.addEventListener('close', () => {
         peer.receiver?.close();
         peer.receiver = undefined;
@@ -242,7 +242,8 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
   const pendingGuestTracks = useCallback(() => [
     ...optionsRef.current.getLocalTracks(),
     ...recoveredRef.current,
-  ].filter((track) => !deliveredRef.current.has(track.id)), []);
+  ].filter((track) => !deliveredRef.current.has(track.id)
+    && (!inviteRef.current?.options.retrySessionOnly || track.sessionId === inviteRef.current.sessionId)), []);
 
   const updateGuestStatus = useCallback(() => {
     const pending = pendingGuestTracks();
@@ -343,12 +344,15 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
     };
     const previous = inviteRef.current;
     inviteRef.current = invite;
-    try { optionsRef.current.onInvite?.(invite); } catch { /* Keep connecting. */ }
+    if (!invite.options.retrySessionOnly) {
+      try { optionsRef.current.onInvite?.(invite); } catch { /* Keep connecting. */ }
+    }
     // Tracks left over from a crashed or reloaded tab in this room.
     const currentRoom = optionsRef.current.roomId;
     if (currentRoom) {
       const live = new Set(optionsRef.current.getLocalTracks().map((track) => track.id));
       const recovered = await listTransferableRecordings({ roomId: currentRoom, excludeIds: live }).catch(() => []);
+      if (inviteRef.current !== invite) return;
       recoveredRef.current = recovered.filter((entry) => !deliveredRef.current.has(entry.id)).map((entry) => ({
         id: entry.id,
         sessionId: entry.metadata.transfer?.sessionId || 'recovered',
@@ -360,7 +364,11 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
         finished: { totalBytes: entry.blob.size, ...(entry.metadata.transfer?.capture ? { capture: entry.metadata.transfer.capture } : {}) },
       }));
     }
-    if (previous && previous.hostId !== invite.hostId) closeGuestPeer();
+    if (invite.options.retrySessionOnly || (previous && (previous.hostId !== invite.hostId || previous.options.retrySessionOnly))) {
+      if (reconnectRef.current.timer) clearTimeout(reconnectRef.current.timer);
+      reconnectRef.current = { attempt: 0, timer: null };
+      closeGuestPeer();
+    }
     if (guestPeerRef.current) guestPeerRef.current.sender.refresh();
     else void connectToHost();
   }, [closeGuestPeer, connectToHost]);
@@ -387,7 +395,8 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
         const from = payload.fromParticipantId;
         if (!optionsRef.current.isOperator || !optionsRef.current.hostReceiving || !from) return;
         if (!isTransferParticipant(optionsRef.current.participants.get(from))) return;
-        sendInvite(from, invitedRef.current.get(from) || currentSessionRef.current);
+        const retryScope = retryScopesRef.current.get(from);
+        sendInvite(from, retryScope || invitedRef.current.get(from) || currentSessionRef.current, Boolean(retryScope));
         return;
       }
       case 'offer':
@@ -442,24 +451,12 @@ export function useRecordingTransfer(options: UseRecordingTransferOptions) {
     });
   }, [pendingGuestTracks]);
 
-  /** Host: resolves once every announced track is saved or failed. */
-  const waitForHostSettled = useCallback((timeoutMs: number): Promise<boolean> => new Promise((resolve) => {
-    if (registry.isSettled()) { resolve(true); return; }
-    const timer = setTimeout(() => { unsubscribe(); resolve(registry.isSettled()); }, timeoutMs);
-    const unsubscribe = registry.subscribe(() => {
-      if (!registry.isSettled()) return;
-      clearTimeout(timer);
-      unsubscribe();
-      resolve(true);
-    });
-  }), [registry]);
-
   return {
     /** Host: per-participant progress of incoming tracks. */
     summaries,
     registry,
     inviteAll,
-    waitForHostSettled,
+    retryGuestTake,
     /** Guest: whether the host asked for tracks, and how sending is going. */
     guestStatus,
     getInvite: () => inviteRef.current,

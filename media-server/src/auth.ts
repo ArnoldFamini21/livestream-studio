@@ -4,6 +4,7 @@ import type {
   LiveStreamTokenClaims,
   ParticipantRole,
   PresentationRenderTokenClaims,
+  PremiereUploadClaims,
   RecordingUploadTokenClaims,
   SfuMembershipControlAction,
   SfuMembershipControlClaims,
@@ -30,7 +31,7 @@ function safeSignatureEquals(actual: string, expected: string): boolean {
 }
 
 export function signLiveStreamToken(
-  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims | WatchGrantClaims,
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims | WatchGrantClaims | PremiereUploadClaims,
   secret: string
 ): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
@@ -100,6 +101,17 @@ export function verifyWatchPlaybackToken(
   } catch {
     return null;
   }
+}
+
+export function verifyPremiereUploadToken(token: string, watchId: string, secret: string, now: number): PremiereUploadClaims | null {
+  if (!WATCH_TOKEN_PATTERN.test(token)) return null;
+  try {
+    const claims = verifyTokenPayload(token, secret) as Partial<PremiereUploadClaims> | null;
+    return claims?.v === 1 && claims.purpose === 'premiere-upload' && claims.watchId === watchId &&
+      typeof claims.exp === 'number' && Number.isSafeInteger(claims.exp) && claims.exp > now &&
+      typeof claims.startsAt === 'number' && Number.isSafeInteger(claims.startsAt)
+      ? claims as PremiereUploadClaims : null;
+  } catch { return null; }
 }
 
 export function verifyRecordingUploadToken(

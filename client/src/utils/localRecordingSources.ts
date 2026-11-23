@@ -45,7 +45,8 @@ export function buildParticipantRecordingSources(
 ): LocalRecordingSource[] {
   if (options.localParticipant.status !== 'on-stage') return [];
   const participantId = getRecordingSourceId(options.localParticipant.id);
-  const audioTracks = liveTracks(options.localStream?.getAudioTracks() || []);
+  const cameraOnly = options.localParticipant.cameraOnly === true;
+  const audioTracks = cameraOnly ? [] : liveTracks(options.localStream?.getAudioTracks() || []);
   const videoTracks = liveTracks(options.localStream?.getVideoTracks() || []);
   const sources: LocalRecordingSource[] = [];
 
@@ -67,7 +68,7 @@ export function buildParticipantRecordingSources(
     });
   }
 
-  if (options.isScreenSharing && options.screenStream) {
+  if (!cameraOnly && options.isScreenSharing && options.screenStream) {
     const screenVideoTracks = liveTracks(options.screenStream.getVideoTracks());
     const screenAudioTracks = liveTracks(options.screenStream.getAudioTracks());
     if (screenVideoTracks.length > 0) {
@@ -208,7 +209,7 @@ export function buildLosslessMicrophoneSource(options: {
   localParticipant: Participant;
   localStream: MediaStream | null;
 }): LocalRecordingSource | null {
-  if (options.localParticipant.status !== 'on-stage') return null;
+  if (options.localParticipant.status !== 'on-stage' || options.localParticipant.cameraOnly) return null;
   const [audioTrack] = liveTracks(options.localStream?.getAudioTracks() || []);
   if (!audioTrack) return null;
   let deviceId: string | undefined;

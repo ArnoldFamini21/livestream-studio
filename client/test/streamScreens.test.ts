@@ -6,10 +6,26 @@ import {
   MAX_STREAM_SCREEN_HEADLINE_LENGTH,
   MAX_STREAM_SCREEN_MESSAGE_LENGTH,
   buildActiveStreamScreen,
+  getBroadcastScreenDuration,
   normalizeStreamScreenConfig,
 } from '../src/utils/streamScreens.ts';
 
 describe('stream screens', () => {
+  it('retains manual behavior for existing setups and bounds opt-in automation', () => {
+    assert.equal(getBroadcastScreenDuration(DEFAULT_STREAM_SCREEN_CONFIG, 'starting'), 0);
+    assert.equal(getBroadcastScreenDuration(DEFAULT_STREAM_SCREEN_CONFIG, 'ending'), 0);
+    assert.equal(getBroadcastScreenDuration(normalizeStreamScreenConfig({ starting: { automatic: true, countdownSeconds: 0 } }), 'starting'), 0);
+    const config = normalizeStreamScreenConfig({
+      starting: { automatic: true, countdownSeconds: 12.4 },
+      ending: { automatic: true, holdSeconds: 99 },
+    });
+    assert.equal(getBroadcastScreenDuration(config, 'starting'), 12);
+    assert.equal(getBroadcastScreenDuration(config, 'ending'), 60);
+    assert.deepEqual(normalizeStreamScreenConfig(JSON.parse(JSON.stringify(config))), config);
+    assert.equal(getBroadcastScreenDuration(normalizeStreamScreenConfig({ ending: { automatic: true } }), 'ending'), 8);
+    assert.equal(getBroadcastScreenDuration(normalizeStreamScreenConfig({ ending: { automatic: true, holdSeconds: -3 } }), 'ending'), 3);
+  });
+
   it('normalizes starting and ending screen copy and options', () => {
     const normalized = normalizeStreamScreenConfig({
       starting: {

@@ -50,6 +50,8 @@ import { buildTimedSegmentsFromWords } from '../utils/autoChapters.ts';
 import { alignTranscriptWords, getClipTranscriptAlignment } from '../utils/clipTranscriptAlignment.ts';
 import { LocalAiStatusNote } from './LocalAiStatusNote.tsx';
 import { ClipSmartOptions } from './ClipSmartOptions.tsx';
+import { RecordingClipBatch, type BatchClipOutput } from './RecordingClipBatch.tsx';
+import { readRecordingTranscriptProject } from '../utils/recordingTranscriptProject.ts';
 import {
   buildEpisodeContentText,
   buildTranscriptFromCaptions,
@@ -2491,6 +2493,9 @@ export function RecordingPanel({
   const [clipBurnCaptions, setClipBurnCaptions] = useState(false);
   const [clipExportNotice, setClipExportNotice] = useState<string | null>(null);
   const [isExportingClip, setIsExportingClip] = useState(false);
+  const [batchExportSource, setBatchExportSource] = useState<string | null>(null);
+  const isBatchExportingClip = batchExportSource !== null;
+  const singleClipController = useRef<AbortController | null>(null);
   const [clipExportProgress, setClipExportProgress] = useState(0);
   const [clipExportError, setClipExportError] = useState<string | null>(null);
   const [clipResult, setClipResult] = useState<{
@@ -3291,7 +3296,6 @@ export function RecordingPanel({
     setClipStartSeconds(null);
     setClipEndSeconds(null);
     setClipAspect('source');
-    setIsExportingClip(false);
     setClipExportProgress(0);
     setClipExportError(null);
     setClipResult(null);
@@ -3307,6 +3311,7 @@ export function RecordingPanel({
     setIsRequestingAiHighlights(false);
     setAiHighlightError(null);
     setAiHighlightNotice(null);
+    return () => singleClipController.current?.abort();
   }, [preview?.url]);
 
   const previewServerClipUploadId = useMemo(() => {
@@ -3363,30 +3368,54 @@ export function RecordingPanel({
 
   const clipSuggestions = aiSuggestions.length > 0 ? aiSuggestions : heuristicClipSuggestions;
 
-  // The in-browser transcript belongs to the session just recorded; its word timings are on the
-  // transcribed track's timeline, so they are moved onto the previewed file's timeline first.
+  const previewSessionId = preview?.sessionId;
+  const [savedClipTranscript, setSavedClipTranscript] = useState<{
+    sessionId: string;
+    transcript: RecordingTranscriptionResult;
+  } | null>(null);
+  const previewSession = sessions.find((session) => session.id === previewSessionId);
+  const previewSessionFiles = previewSession?.files;
+  const isTranscriptOpen = Boolean(transcriptSession);
+  useEffect(() => {
+    let current = true;
+    setSavedClipTranscript(null);
+    if (!previewSessionId || !previewSessionFiles || isTranscriptOpen) return;
+    void readRecordingTranscriptProject(previewSessionId).then((project) => {
+      if (current && project?.transcript.words?.length && previewSessionFiles.some((file) =>
+        file.id === project.sourceId && file.fileName === project.transcript.sourceFileName && file.size === project.sourceSize
+      )) {
+        setSavedClipTranscript({ sessionId: previewSessionId, transcript: project.transcript });
+      }
+    }).catch(() => {
+      // Originals can still be clipped if the saved transcript is unavailable.
+    });
+    return () => { current = false; };
+  }, [isTranscriptOpen, previewSessionFiles, previewSessionId]);
+
+  // Move the transcript's timestamps from its source track onto the preview track.
+  const clipTranscript = clipSuggestionContext.isActiveSession && generatedTranscript?.words?.length
+    ? generatedTranscript
+    : savedClipTranscript && savedClipTranscript.sessionId === previewSessionId ? savedClipTranscript.transcript : null;
+  const clipSourceTracks = clipSuggestionContext.isActiveSession ? recordedFiles
+    : previewSessionId ? libraryTrackFiles[previewSessionId] : undefined;
   const clipTranscriptAlignment = useMemo(() => (
-    clipSuggestionContext.isActiveSession && generatedTranscript?.words?.length && preview
-      ? getClipTranscriptAlignment(recordedFiles, generatedTranscript.sourceFileName, preview.file)
+    clipTranscript?.words?.length && preview
+      ? getClipTranscriptAlignment(clipSourceTracks ?? previewSessionFiles ?? [], clipTranscript.sourceFileName, preview.file)
       : null
-  ), [clipSuggestionContext.isActiveSession, generatedTranscript, preview, recordedFiles]);
+  ), [clipSourceTracks, clipTranscript, preview, previewSessionFiles]);
   const clipAlignedWords = useMemo(() => (
-    clipTranscriptAlignment?.usable && generatedTranscript?.words?.length
-      ? alignTranscriptWords(generatedTranscript.words, clipTranscriptAlignment.shiftSeconds)
+    clipTranscriptAlignment?.usable && clipTranscript?.words?.length
+      ? alignTranscriptWords(clipTranscript.words, clipTranscriptAlignment.shiftSeconds)
       : null
-  ), [clipTranscriptAlignment, generatedTranscript]);
+  ), [clipTranscriptAlignment, clipTranscript]);
   const previewTranscriptSegments = useMemo(() => (
     clipAlignedWords?.length ? buildTimedSegmentsFromWords(clipAlignedWords) : []
   ), [clipAlignedWords]);
   const clipCaptionWords = clipAlignedWords?.length ? clipAlignedWords : null;
-  // Each participant's own mic track, in recording order (the host first), for active-speaker framing of program clips.
-  const clipSpeakerTracks = useMemo(() => (
-    clipSuggestionContext.isActiveSession
-      ? recordedFiles
-          .filter((file) => file.kind === 'audio' && !/screen audio|lossless/i.test(file.label))
-          .map((file) => file.blob)
-      : []
-  ), [clipSuggestionContext.isActiveSession, recordedFiles]);
+  // Each participant's own mic track, in recording order (the host first).
+  const clipSpeakerTracks = useMemo(() => clipSourceTracks
+    ?.filter((file) => file.kind === 'audio' && !/screen audio|lossless/i.test(file.label))
+    .map((file) => file.blob) ?? [], [clipSourceTracks]);
 
   const canRequestAiHighlights = useMemo(
     () => previewTranscriptSegments.length >= 3 || hasEnoughCaptionsForAiHighlights(clipSuggestionContext.captionSegments),
@@ -3454,7 +3483,7 @@ export function RecordingPanel({
   }, []);
 
   const handleExportClip = useCallback(async () => {
-    if (!preview || isExportingClip) return;
+    if (!preview || isBatchExportingClip || singleClipController.current) return;
     const range = {
       startSeconds: clipStartSeconds ?? Number.NaN,
       endSeconds: clipEndSeconds ?? Number.NaN,
@@ -3467,6 +3496,8 @@ export function RecordingPanel({
 
     const captureUrl = preview.url;
     const hasVideo = preview.type.startsWith('video/');
+    const controller = new AbortController();
+    singleClipController.current = controller;
     setIsExportingClip(true);
     setClipExportProgress(0);
     setClipExportError(null);
@@ -3482,6 +3513,7 @@ export function RecordingPanel({
           if (previewUrlRef.current === captureUrl) setClipExportProgress(fraction);
         },
         {
+          signal: controller.signal,
           smartCrop: hasVideo && aspect !== 'source' && clipSmartFraming
             ? { speakerTracks: preview.file.kind === 'program' ? clipSpeakerTracks : [] }
             : null,
@@ -3496,7 +3528,7 @@ export function RecordingPanel({
             : null,
         }
       );
-      if (previewUrlRef.current !== captureUrl) return;
+      if (controller.signal.aborted || previewUrlRef.current !== captureUrl) return;
       if (captured.warnings?.length) setClipExportNotice(captured.warnings.join(' '));
       setClipResult({
         blob: captured.blob,
@@ -3506,13 +3538,16 @@ export function RecordingPanel({
         kind: getClipTrackKind(preview.file.kind, hasVideo),
       });
     } catch (err) {
-      if (previewUrlRef.current !== captureUrl) return;
+      if (controller.signal.aborted || previewUrlRef.current !== captureUrl) return;
       const message = err instanceof Error ? err.message : 'Clip export failed';
       setClipExportError(message);
     } finally {
-      if (previewUrlRef.current === captureUrl) setIsExportingClip(false);
+      if (singleClipController.current === controller) {
+        singleClipController.current = null;
+        setIsExportingClip(false);
+      }
     }
-  }, [clipAspect, clipBrand, clipBurnCaptions, clipCaptionWords, clipEndSeconds, clipSmartFraming, clipSpeakerTracks, clipStartSeconds, isExportingClip, preview]);
+  }, [clipAspect, clipBrand, clipBurnCaptions, clipCaptionWords, clipEndSeconds, clipSmartFraming, clipSpeakerTracks, clipStartSeconds, isBatchExportingClip, preview]);
 
   const handleDownloadClip = useCallback(() => {
     if (!clipResult) return;
@@ -3636,6 +3671,20 @@ export function RecordingPanel({
       setIsSavingClip(false);
     }
   }, [clipResult, isSavingClip, preview, saveSession, syncRecordingCatalog]);
+
+  const handleSaveBatchClip = useCallback(async (clip: BatchClipOutput) => {
+    const session = await saveSession({
+      roomName: `${preview?.sourceName || roomName} · ${clip.label}`,
+      durationSeconds: clip.durationSeconds,
+      files: [{ label: clip.label, blob: clip.blob, fileName: clip.fileName, kind: 'video' }],
+    });
+    void syncRecordingCatalog(session);
+  }, [preview?.sourceName, roomName, saveSession, syncRecordingCatalog]);
+
+  const handleBatchBusyChange = useCallback((source: string, busy: boolean) => {
+    if (busy) previewMediaRef.current?.pause();
+    setBatchExportSource((current) => busy ? source : current === source ? null : current);
+  }, []);
 
   const handleToggleSessionTracks = useCallback(async (session: LocalRecordingSession) => {
     setLibraryTrackError(null);
@@ -4694,7 +4743,7 @@ export function RecordingPanel({
                   type="button"
                   style={styles.clipBtn}
                   onClick={handleSetClipStart}
-                  disabled={isExportingClip}
+                  disabled={isBatchExportingClip || isExportingClip}
                   title="Mark the clip start at the current playback position"
                 >
                   Set start
@@ -4703,7 +4752,7 @@ export function RecordingPanel({
                   type="button"
                   style={styles.clipBtn}
                   onClick={handleSetClipEnd}
-                  disabled={isExportingClip}
+                  disabled={isBatchExportingClip || isExportingClip}
                   title="Mark the clip end at the current playback position"
                 >
                   Set end
@@ -4713,12 +4762,12 @@ export function RecordingPanel({
                   style={{
                     ...styles.clipBtn,
                     ...styles.clipBtnPrimary,
-                    ...(isExportingClip || clipStartSeconds === null || clipEndSeconds === null
+                    ...(isBatchExportingClip || isExportingClip || clipStartSeconds === null || clipEndSeconds === null
                       ? styles.clipBtnDisabled
                       : {}),
                   }}
                   onClick={handleExportClip}
-                  disabled={isExportingClip || clipStartSeconds === null || clipEndSeconds === null}
+                  disabled={isBatchExportingClip || isExportingClip || clipStartSeconds === null || clipEndSeconds === null}
                 >
                   {isExportingClip ? `Exporting ${Math.round(clipExportProgress * 100)}%` : 'Export clip'}
                 </button>
@@ -4737,10 +4786,10 @@ export function RecordingPanel({
                       style={{
                         ...styles.clipAspectBtn,
                         ...(clipAspect === option.id ? styles.clipAspectBtnActive : {}),
-                        ...(isExportingClip ? styles.clipBtnDisabled : {}),
+                        ...(isBatchExportingClip || isExportingClip ? styles.clipBtnDisabled : {}),
                       }}
                       onClick={() => setClipAspect(option.id)}
-                      disabled={isExportingClip}
+                      disabled={isBatchExportingClip || isExportingClip}
                       title={option.id === 'source'
                         ? 'Keep the original aspect ratio'
                         : `Crop the clip to ${option.label}`}
@@ -4760,7 +4809,7 @@ export function RecordingPanel({
                   captionsAvailable={Boolean(clipCaptionWords)}
                   captionsNote={clipTranscriptAlignment?.note ?? null}
                   speakerTracksAvailable={preview.file.kind === 'program' && clipSpeakerTracks.length > 1}
-                  disabled={isExportingClip}
+                  disabled={isBatchExportingClip || isExportingClip}
                   notice={clipExportNotice}
                 />
               )}
@@ -4778,7 +4827,7 @@ export function RecordingPanel({
                           ...(isRequestingAiHighlights ? styles.clipBtnDisabled : {}),
                         }}
                         onClick={handleRequestAiHighlights}
-                        disabled={isRequestingAiHighlights}
+                        disabled={isBatchExportingClip || isRequestingAiHighlights}
                         title="Ask the studio AI to pick the most shareable moments from the captions"
                       >
                         {isRequestingAiHighlights
@@ -4798,10 +4847,10 @@ export function RecordingPanel({
                           style={{
                             ...styles.clipSuggestionChip,
                             ...(suggestion.reason === 'ai' ? styles.clipSuggestionChipAi : {}),
-                            ...(isExportingClip ? styles.clipBtnDisabled : {}),
+                            ...(isBatchExportingClip || isExportingClip ? styles.clipBtnDisabled : {}),
                           }}
                           onClick={() => handleApplyClipSuggestion(suggestion)}
-                          disabled={isExportingClip}
+                          disabled={isBatchExportingClip || isExportingClip}
                           title={`Set the clip range to ${formatClipTimecode(suggestion.startSeconds)} - ${formatClipTimecode(suggestion.endSeconds)}`}
                         >
                           {suggestion.reason === 'ai' ? '✨ ' : ''}
@@ -4813,6 +4862,27 @@ export function RecordingPanel({
                   {aiHighlightError && <div style={styles.clipError}>{aiHighlightError}</div>}
                   {aiHighlightNotice && <div style={styles.clipHint}>{aiHighlightNotice}</div>}
                 </div>
+              )}
+              {preview.type.startsWith('video/') && clipSuggestions.length > 0 && (
+                <RecordingClipBatch
+                  key={preview.url}
+                  suggestions={clipSuggestions}
+                  source={{ blob: preview.file.blob, name: preview.sourceName }}
+                  speakerTracks={preview.file.kind === 'program' ? clipSpeakerTracks : []}
+                  captionWords={clipCaptionWords}
+                  captionStyle={{
+                    fontFamily: clipBrand?.fontFamily || 'Inter, Arial, sans-serif',
+                    accentColor: clipBrand?.accentColor || '#facc15',
+                  }}
+                  disabled={isRecording || isStopping || isExportingClip || (isBatchExportingClip && batchExportSource !== preview.url)}
+                  onBusyChange={(busy) => handleBatchBusyChange(preview.url, busy)}
+                  onDownload={downloadBlob}
+                  createArchive={(clips) => createZipBundle(clips.map((clip, index) => ({
+                    blob: clip.blob,
+                    path: `${String(index + 1).padStart(2, '0')}-${clip.fileName}`,
+                  })))}
+                  onSave={handleSaveBatchClip}
+                />
               )}
               {isExportingClip && (
                 <div style={styles.progressContainer}>

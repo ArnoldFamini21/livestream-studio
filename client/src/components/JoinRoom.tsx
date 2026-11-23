@@ -1,6 +1,7 @@
 import '../styles/studio-chrome.css';
 import '../styles/join-room.css';
 import { StudioIcon } from './StudioIcon.tsx';
+import { isSecondaryCameraEntry, secondaryCameraSearch, studioSeatStorageKey } from '../utils/secondaryCamera.ts';
 import { saveStudioResumeToken } from '../utils/studioSession.ts';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
@@ -94,11 +95,13 @@ export function JoinRoom() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const cameraOnly = isSecondaryCameraEntry(searchParams);
+  const seatKey = roomId ? studioSeatStorageKey(roomId, cameraOnly) : undefined;
   const savedHostStudio = roomId ? getSavedHostStudio(roomId) : null;
-  const urlHostToken = roomId ? getUrlHostToken() : '';
-  const hostSession = roomId ? getHostSession(roomId, urlHostToken) : null;
+  const urlHostToken = roomId && !cameraOnly ? getUrlHostToken() : '';
+  const hostSession = roomId && !cameraOnly ? getHostSession(roomId, urlHostToken) : null;
   const hostToken = hostSession?.hostToken || '';
-  const isHostEntryRequested = searchParams.get('role') === 'host';
+  const isHostEntryRequested = !cameraOnly && searchParams.get('role') === 'host';
   // Invite tokens arrive in the URL fragment (older links: the query); read once, then removed from the address bar.
   const [inviteTokens] = useState(() => captureInviteTokens(
     roomId,
@@ -107,14 +110,14 @@ export function JoinRoom() {
     (url) => window.history.replaceState(window.history.state, '', url)
   ));
   const coHostInviteToken = inviteTokens.coHost;
-  const isCoHostInvite = searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
+  const isCoHostInvite = !cameraOnly && searchParams.get('role') === 'co-host' && coHostInviteToken.length > 0;
   const guestInviteToken = inviteTokens.guest;
   const isSecureGuestInvite = !isCoHostInvite && guestInviteToken.length > 0;
   const inviteStudioName = getInviteStudioName(searchParams);
   const isHostSession = Boolean(hostSession);
   const hostEntryMode = isHostSession || isHostEntryRequested;
   const hostAccessMissing = Boolean(isHostEntryRequested && !hostSession);
-  const initialName = hostSession
+  const initialName = cameraOnly ? 'Second camera' : hostSession
     ? hostSession.hostName
     : isHostEntryRequested
       ? savedHostStudio?.hostName || getStoredUserName() || ''
@@ -190,7 +193,7 @@ export function JoinRoom() {
     updateVideoQuality,
     applyAudioOutput,
     onAudioOutputDeviceChange,
-  } = useMediaDevices();
+  } = useMediaDevices(cameraOnly);
 
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
   const deviceSettingsRef = useRef<HTMLDialogElement>(null);
@@ -231,13 +234,13 @@ export function JoinRoom() {
       noiseSuppression,
       voiceIsolation,
       videoQuality: readPreferredVideoQuality(),
-      audioEnabled: audioEnabledRef.current,
+      audioEnabled: !cameraOnly && audioEnabledRef.current,
       videoEnabled: videoEnabledRef.current,
     });
     return () => {
       stopMedia();
     };
-  }, [startMedia, stopMedia, echoCancellation, noiseSuppression, voiceIsolation]);
+  }, [cameraOnly, startMedia, stopMedia, echoCancellation, noiseSuppression, voiceIsolation]);
 
   // Attach local stream to preview video
   useEffect(() => {
@@ -441,6 +444,7 @@ export function JoinRoom() {
       return;
     }
     if (needsRoomPassword && !roomPassword.trim()) return;
+    if (cameraOnly && !hasLiveCamera) return;
     if (registrationRequired && !registrationSubmitted) {
       const registered = await submitGuestRegistration();
       if (!registered) return;
@@ -460,33 +464,36 @@ export function JoinRoom() {
       sessionStorage.setItem('userRole', 'co-host');
       sessionStorage.setItem(`coHostInviteToken:${roomId}`, coHostInviteToken);
     } else {
-      sessionStorage.setItem('userRole', 'guest');
-      if (roomId) {
-        sessionStorage.removeItem(`coHostInviteToken:${roomId}`);
+      if (!cameraOnly) sessionStorage.setItem('userRole', 'guest');
+      if (seatKey) {
+        if (!cameraOnly && roomId) sessionStorage.removeItem(`coHostInviteToken:${roomId}`);
         if (isSecureGuestInvite) {
-          saveStudioResumeToken(roomId, null);
-          sessionStorage.setItem(`guestInviteToken:${roomId}`, guestInviteToken);
+          saveStudioResumeToken(seatKey, null);
+          sessionStorage.setItem(`guestInviteToken:${seatKey}`, guestInviteToken);
         } else {
-          sessionStorage.removeItem(`guestInviteToken:${roomId}`);
+          sessionStorage.removeItem(`guestInviteToken:${seatKey}`);
         }
       }
     }
     // The studio page now reads the role-specific keys above; the pending copy is no longer needed.
     clearPendingInviteTokens(roomId, getBrowserInviteStorage());
-    sessionStorage.setItem('userName', guestName);
-    rememberDisplayName(guestName);
-    sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));
-    sessionStorage.setItem('preferredVideoEnabled', String(videoEnabled));
-    writePreferredAudioProcessing({ ...readPreferredAudioProcessing(), echoCancellation, noiseSuppression, voiceIsolation });
-    writePreferredVideoQuality(videoQuality);
-    if (roomId && needsRoomPassword) {
-      sessionStorage.setItem(`roomPassword:${roomId}`, roomPassword);
-    } else if (roomId) {
-      sessionStorage.removeItem(`roomPassword:${roomId}`);
+    sessionStorage.setItem(cameraOnly ? `secondaryCameraName:${roomId}` : 'userName', guestName.trim());
+    if (!cameraOnly) {
+      rememberDisplayName(guestName);
+      sessionStorage.setItem('preferredAudioEnabled', String(audioEnabled));
+      sessionStorage.setItem('preferredVideoEnabled', String(videoEnabled));
+      writePreferredAudioProcessing({ ...readPreferredAudioProcessing(), echoCancellation, noiseSuppression, voiceIsolation });
+      writePreferredVideoQuality(videoQuality);
     }
-    navigate(`/studio/${roomId}`);
+    if (seatKey && needsRoomPassword) {
+      sessionStorage.setItem(`roomPassword:${seatKey}`, roomPassword);
+    } else if (seatKey) {
+      sessionStorage.removeItem(`roomPassword:${seatKey}`);
+    }
+    navigate(`/studio/${roomId}${secondaryCameraSearch(cameraOnly)}`);
   };
 
+  const hasLiveCamera = videoEnabled && Boolean(localStream?.getVideoTracks().some(track => track.readyState === 'live'));
   const hasLiveAudio = Boolean(localStream?.getAudioTracks().some((track) => track.readyState === 'live'));
 
   const joinDisabled = Boolean(
@@ -495,7 +502,8 @@ export function JoinRoom() {
     hostAccessMissing ||
     (scheduledGuestBlocked && (!registrationRequired || registrationSubmitted)) ||
     (registrationRequired && !registrationSubmitted && !canSubmitRegistration) ||
-    (needsRoomPassword && !roomPassword.trim())
+    (needsRoomPassword && !roomPassword.trim()) ||
+    (cameraOnly && !scheduledGuestBlocked && !hasLiveCamera)
   );
 
   // Say what is missing instead of leaving a silently disabled button.
@@ -505,7 +513,7 @@ export function JoinRoom() {
       ? 'Enter your name to continue.'
       : needsRoomPassword && !roomPassword.trim()
         ? 'Enter the room password to continue.'
-        : null;
+        : cameraOnly && !hasLiveCamera ? 'Turn on a camera to request admission.' : null;
 
   const joinButtonLabel = hostAccessMissing
     ? 'Host Access Missing'
@@ -519,7 +527,7 @@ export function JoinRoom() {
             ? 'Join as Co-host'
             : registrationRequired && !registrationSubmitted
               ? 'Register & Join Studio'
-              : 'Join Studio';
+              : cameraOnly ? 'Join as secondary camera' : 'Join Studio';
 
   const onAudioDeviceChange = async (deviceId: string) => {
     try {
@@ -693,7 +701,7 @@ export function JoinRoom() {
 
         {/* AV toggle buttons */}
         <div className="join-toggleRow">
-          <button
+          {!cameraOnly && <button
             className="entry-toggle"
             type="button"
             onClick={toggleAudio}
@@ -717,7 +725,7 @@ export function JoinRoom() {
                 <line x1="8" y1="23" x2="16" y2="23" />
               </svg>
             )}
-          </button>
+          </button>}
           <button
             className="entry-toggle"
             type="button"
@@ -751,17 +759,17 @@ export function JoinRoom() {
           ) : (
             <p className="entry-preview-note">Only you can see this preview.</p>
           )}
-          <PreJoinChecks
+          {!cameraOnly && <PreJoinChecks
             stream={localStream}
             applyAudioOutput={applyAudioOutput}
             onPlaySpeakerTest={() => void playSpeakerTest()}
             speakerTestPlaying={speakerTestPlaying}
-          />
+          />}
         </section>
         <section className="entry-form" aria-labelledby="entry-heading">
           <p className="entry-studio-name">{roomInfo?.name || inviteStudioName || 'Your studio'}</p>
-          <h1 id="entry-heading">Ready when<br /> you are.</h1>
-          <p className="entry-intro">{hostEntryMode ? 'Check your camera and step into your studio.' : isCoHostInvite ? 'Join the conversation as a co-host.' : `Join ${roomInfo?.hostName || 'your host'} in the studio.`}</p>
+          <h1 id="entry-heading">{cameraOnly ? 'Connect a secondary camera' : <>Ready when<br /> you are.</>}</h1>
+          <p className="entry-intro">{cameraOnly ? 'This device sends video only. The host can bring it on stage and include its separate camera track in the recording.' : hostEntryMode ? 'Check your camera and step into your studio.' : isCoHostInvite ? 'Join the conversation as a co-host.' : `Join ${roomInfo?.hostName || 'your host'} in the studio.`}</p>
         {roomInfo?.scheduledFor && (
           <p style={styles.scheduleText}>
             {new Date(roomInfo.scheduledFor).toLocaleString([], {
@@ -793,7 +801,7 @@ export function JoinRoom() {
 
         {/* Name input */}
         <div style={styles.field}>
-          <label style={styles.label} htmlFor="join-name">Your name</label>
+          <label style={styles.label} htmlFor="join-name">{cameraOnly ? 'Camera name' : 'Your name'}</label>
           <input
             style={styles.input}
             id="join-name" placeholder="Enter your name"
@@ -861,7 +869,7 @@ export function JoinRoom() {
           {joinButtonLabel}
         </button>
         {joinHint && <p id="entry-join-hint" style={styles.joinHint}>{joinHint}</p>}
-        {!joinHint && !hasLiveAudio && (
+        {!cameraOnly && !joinHint && !hasLiveAudio && (
           <p className="entry-mic-warning" role="status">
             You're joining without a microphone, so nobody will hear you. Use Try again to fix it first.
           </p>
@@ -871,10 +879,10 @@ export function JoinRoom() {
         </section>
       </main>
       {showDeviceSettings && <dialog id="entry-device-settings" ref={deviceSettingsRef} className="entry-device-dialog" aria-labelledby="entry-settings-heading" onCancel={event => { event.preventDefault(); setShowDeviceSettings(false); }} onClick={event => { if (event.target !== deviceSettingsRef.current) return; const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) setShowDeviceSettings(false); }}>
-        <div className="entry-dialog-heading"><h2 id="entry-settings-heading">Camera & audio</h2><button type="button" onClick={() => setShowDeviceSettings(false)} aria-label="Close settings"><StudioIcon name="close" /></button></div>
+        <div className="entry-dialog-heading"><h2 id="entry-settings-heading">{cameraOnly ? 'Camera settings' : 'Camera & audio'}</h2><button type="button" onClick={() => setShowDeviceSettings(false)} aria-label="Close settings"><StudioIcon name="close" /></button></div>
         {/* Device selectors */}
         <div style={styles.deviceSelectors}>
-          {audioDevices.length > 0 && (
+          {!cameraOnly && audioDevices.length > 0 && (
             <div style={styles.deviceField}>
               <label style={styles.deviceLabel} htmlFor="entry-microphone">Microphone</label>
               <select
@@ -916,7 +924,7 @@ export function JoinRoom() {
               Mirror my preview (viewers always see the true view)
             </label>
           )}
-          {audioOutputDevices.length > 0 && (
+          {!cameraOnly && audioOutputDevices.length > 0 && (
             <div style={styles.deviceField}>
               <label style={styles.deviceLabel} htmlFor="entry-speaker">Speaker</label>
               <div style={styles.speakerControlRow}>
@@ -953,7 +961,7 @@ export function JoinRoom() {
         </div>
 
         {/* Advanced Audio Options */}
-        <details className="join-audio-options" style={styles.advancedAudio}>
+        {!cameraOnly && <details className="join-audio-options" style={styles.advancedAudio}>
           <summary>Audio settings</summary>
           <div style={styles.checkboxRow}>
             <label style={styles.checkboxLabel}>
@@ -969,7 +977,7 @@ export function JoinRoom() {
               Studio Voice Cleanup
             </label>
           </div>
-        </details>
+        </details>}
 
 
         <button className="entry-settings-done" type="button" onClick={() => setShowDeviceSettings(false)}>Done</button>

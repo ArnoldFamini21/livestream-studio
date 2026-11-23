@@ -1,0 +1,86 @@
+.recording-clip-batch {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.recording-clip-batch summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.recording-clip-batch p,
+.recording-clip-batch fieldset,
+.recording-clip-batch ul {
+  margin: 8px 0;
+}
+
+.recording-clip-batch fieldset {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.recording-clip-batch label,
+.recording-clip-batch__actions {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.recording-clip-batch input {
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.recording-clip-batch :is(strong, small, label > span) {
+  overflow-wrap: anywhere;
+}
+
+.recording-clip-batch small {
+  display: block;
+  color: var(--text-secondary);
+}
+
+.recording-clip-batch ul {
+  padding: 0;
+  list-style: none;
+}
+
+.recording-clip-batch li {
+  display: grid;
+  gap: 4px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.recording-clip-batch video {
+  display: block;
+  max-height: 300px;
+  max-width: 100%;
+  margin-inline: auto;
+  background: #000;
+}
+
+.recording-clip-batch button {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.recording-clip-batch button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.recording-clip-batch__actions {
+  flex-wrap: wrap;
+}

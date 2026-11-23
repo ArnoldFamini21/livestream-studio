@@ -18,6 +18,7 @@ import {
   type ProgressiveUploadState,
 } from '../utils/progressiveRecordingUpload.ts';
 import type { LocalProgressiveUploadConfig } from './useLocalRecording.ts';
+import { timelineNow } from '../utils/recordingTakeManifest.ts';
 
 export interface RecordingStreamInput {
   stream: MediaStream;
@@ -39,6 +40,7 @@ export interface StartProgramRecordingOptions {
   progressiveUpload?: LocalProgressiveUploadConfig;
   /** Write the program straight into the host's recording folder. */
   storage?: RecordingTrackStoreFactory;
+  onCaptureStarted?: (sourceId: string, startedAtMs: number) => void;
 }
 
 export interface ProgramProgressiveUploadHandle {
@@ -187,6 +189,7 @@ export function useRecording(roomName = 'Studio') {
         const track: RecordingTrack = { participantId: id, name, kind, recorder, chunkStore, finished, cleanup };
         void finished.catch(() => {}); // stopRecording reports failures to its caller.
         tracksRef.current.set(id, track);
+        const startedAtMs = timelineNow();
         try {
           recorder.start(1000); // Capture in 1-second chunks
         } catch (err) {
@@ -194,7 +197,9 @@ export function useRecording(roomName = 'Studio') {
           tracksRef.current.delete(id);
           void chunkStore.discard();
           cleanupTrack(track);
+          continue;
         }
+        options?.onCaptureStarted?.(id, startedAtMs);
       }
 
       if (tracksRef.current.size === 0) {

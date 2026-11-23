@@ -41,9 +41,12 @@ import type {
   RoomRegistrantResponse,
   ExternalChatPlatform,
   ExternalChatStatusPayload,
+  ProductionRundown,
+  ProductionRundownUpdate,
 } from '@studio/shared';
 import { WatchCaptionBuffer, WATCH_CAPTIONS_OFF } from './watchCaptions.js';
 import {
+  EMPTY_PRODUCTION_RUNDOWN,
   RECORDING_UPLOAD_PROGRESS_STATUSES,
   MAX_RECORDING_TRANSFER_SDP_LENGTH,
   MAX_PARTICIPANT_TITLE_LENGTH,
@@ -91,6 +94,7 @@ import {
   type RoomSnapshot,
   type RoomSnapshotStore,
 } from './roomPersistence.js';
+import { PREMIERE_MAX_DURATION_MS, WATCH_INVITE_TTL_MS, type PremiereUploadClaims } from '@studio/shared';
 import {
   PasswordAttemptLimiter,
   SocketsPerIpLimiter,
@@ -112,6 +116,7 @@ import { isStudioCreationGated } from './studioAccessPolicy.js';
 import { buildPresentationRenderClaims } from './presentationRenderToken.js';
 import { getWatchAccessSecret, issueWatchGrant } from './watchAccess.js';
 import { WatchCallIns } from './watchCallIns.js';
+import { changeProductionRundown } from './productionRundown.js';
 import { ViewerChatError, ViewerChatRoom, type ViewerChatHost } from './viewerChat.js';
 
 type RelaySignalMessage = Extract<SignalMessage, { type: 'offer' | 'answer' | 'ice-candidate' }>;
@@ -121,6 +126,7 @@ interface ParticipantEntry {
   ws: WebSocket;
   joinSessionId?: string;
   stageUploadToken?: string;
+  screenShareStreamId?: string;
   /** Reads stage pictures; issued once the participant is admitted. */
   stageReadToken?: string;
   /** Reads the studio logo and nothing else; every participant has one, the green room included. */
@@ -173,6 +179,7 @@ interface RoomState {
   /** Viewer chat from the public watch page (switches, blocks, feed); kept in memory for the life of the room (not stored). */
   viewerChat?: ViewerChatRoom;
   watchCalls?: WatchCallIns;
+  productionRundown?: ProductionRundown;
   stageContent?: StageContentPayload;
   /** Who set stageContent, so a co-host cannot clear what the host presents. */
   stageContentSetBy?: { participantId: string; role: Participant['role'] };
@@ -316,6 +323,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'chat-overlay-update',
   'viewer-chat-settings-update',
   'watch-invite-request',
+  'production-rundown-update',
   'watch-event-settings',
   'watch-call-in-decide',
   'viewer-chat-remove',
@@ -431,6 +439,7 @@ const viewerModerationRateLimiter = new WsRateLimiter<WebSocket>(
   { control: 30, relay: 30 },
   10_000,
 );
+const productionRundownRateLimiter = new WsRateLimiter<WebSocket>({ control: 20, relay: 20 }, 10_000);
 const talkbackStateRateLimiter = new WsRateLimiter<WebSocket>(
   { control: TALKBACK_STATE_RATE_LIMIT_MAX, relay: TALKBACK_STATE_RATE_LIMIT_MAX },
   TALKBACK_STATE_RATE_LIMIT_WINDOW_MS,
@@ -538,10 +547,18 @@ export class RoomRegistrationError extends Error {
 function getRoomIdleReferenceMs(roomState: RoomState): number {
   const createdAtMs = Date.parse(roomState.room.createdAt);
   const created = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+  const premiereEnd = premiereWindowEnd(roomState);
+  if (premiereEnd) return Math.max(created, premiereEnd);
   if (roomState.room.status !== 'scheduled') return created;
 
   const scheduledAtMs = Date.parse(roomState.room.scheduledFor || '');
   return Number.isFinite(scheduledAtMs) ? Math.max(created, scheduledAtMs) : created;
+}
+
+function premiereWindowEnd(roomState: RoomState): number {
+  if (!roomState.room.premiere) return 0;
+  const start = Date.parse(roomState.room.scheduledFor || '');
+  return Number.isFinite(start) ? start + PREMIERE_MAX_DURATION_MS : 0;
 }
 
 function createWatchId(): string {
@@ -602,6 +619,7 @@ function createRoomStateFromSnapshot(snapshot: RoomSnapshot): RoomState {
     hostToken: snapshot.hostToken,
     creatorIp: snapshot.creatorIp,
     ...(session?.createdByOwner ? { createdByOwner: true } : {}),
+    ...(session?.productionRundown ? { productionRundown: session.productionRundown } : {}),
     hasBeenJoined: snapshot.hasBeenJoined,
     ...(snapshot.studioBranding ? { studioBranding: withoutUnstoredBackgroundImage(snapshot.studioBranding) } : {}),
     ...(snapshot.passwordHash ? { passwordHash: snapshot.passwordHash } : {}),
@@ -624,6 +642,7 @@ function buildRoomSessionSnapshot(roomState: RoomState): RoomSessionSnapshot {
     watchId: roomState.watchId,
     ...(roomState.legacyWatchByRoomId ? { legacyWatchByRoomId: true } : {}),
     ...(roomState.createdByOwner ? { createdByOwner: true } : {}),
+    ...(roomState.productionRundown ? { productionRundown: roomState.productionRundown } : {}),
     ...(roomState.recordingSessionId ? {
       recording: {
         sessionId: roomState.recordingSessionId,
@@ -759,7 +778,7 @@ function cancelEmptyRoomDeletion(roomId: string, roomState: RoomState) {
 }
 
 function scheduleEmptyRoomDeletion(roomId: string, roomState: RoomState) {
-  if (roomState.room.status === 'scheduled' || roomState.emptyRoomTimer) return;
+  if (roomState.room.status === 'scheduled' || premiereWindowEnd(roomState) > Date.now() || roomState.emptyRoomTimer) return;
 
   roomState.emptyRoomTimer = setTimeout(() => {
     const current = rooms.get(roomId);
@@ -1081,12 +1100,38 @@ function getLiveStreamTokenSecret(): string | null {
 }
 
 function signMediaToken(
-  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims,
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims | PremiereUploadClaims,
   secret: string
 ): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
   const signature = createHmac('sha256', secret).update(body).digest('base64url');
   return `${body}.${signature}`;
+}
+
+export async function issuePremiereSetup(roomId: string, hostToken: unknown, now = Date.now()) {
+  const access = getRoomHostAccess(roomId, hostToken);
+  if (access.status !== 'ok') return access;
+  const { room } = access;
+  const startsAt = Date.parse(room.scheduledFor || '');
+  if ((!room.premiere && room.status !== 'scheduled') || room.status === 'ended' || !room.registration?.inviteOnly ||
+      !Number.isFinite(startsAt) || startsAt <= now || startsAt + PREMIERE_MAX_DURATION_MS >= now + WATCH_INVITE_TTL_MS) {
+    return { status: 'ineligible' as const };
+  }
+  const secret = getLiveStreamTokenSecret();
+  if (!secret || !roomSnapshotStore) return { status: 'unavailable' as const };
+  const roomState = rooms.get(roomId);
+  if (!roomState) return { status: 'not_found' as const };
+  room.premiere = true;
+  try { await roomSnapshotStore.saveRoomSnapshot(buildRoomStateSnapshot(roomState)); }
+  catch { return { status: 'unavailable' as const }; }
+  const { watchId } = roomState;
+  return {
+    status: 'ready' as const,
+    watchId,
+    startsAt,
+    uploadToken: signMediaToken({ v: 1, purpose: 'premiere-upload', watchId, startsAt, exp: now + 15 * 60_000 }, secret),
+    invite: issueWatchGrant('watch-invite', watchId, secret, Number.MAX_SAFE_INTEGER, now).token,
+  };
 }
 
 export interface SfuMembershipNotification {
@@ -1447,6 +1492,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
     case 'qa-question-upvote':
       handleQAQuestionUpvote(ws, message.payload);
       break;
+    case 'production-rundown-update':
+      handleProductionRundownUpdate(ws, message.payload);
+      break;
     case 'watch-invite-request':
     case 'watch-event-settings':
     case 'watch-call-in-decide':
@@ -1776,6 +1824,12 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
   const otherParticipants = Array.from(roomState.participants.values())
     .map((p) => p.participant)
     .filter((p) => p.id !== participant.id && (admitted || isOperatorRole(p.role)));
+  const screenShareStreams = [...roomState.participants.values()]
+    .filter((sender) => sender.participant.id !== participant.id
+      && sender.participant.screenSharing && canExchangeStudioMedia(sender.participant, participant))
+    .flatMap((sender) => sender.screenShareStreamId
+      ? [{ participantId: sender.participant.id, streamId: sender.screenShareStreamId }]
+      : []);
   const qaQuestions = admitted
     ? Array.from(roomState.qaQuestions.values())
       .filter((question) => operator || isPublicQAQuestion(question))
@@ -1806,6 +1860,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
       room: roomState.room,
       participant,
       participants: otherParticipants,
+      ...(admitted ? { screenShareStreams } : {}),
       chatMessages: getVisibleChatMessages(roomState, participant, participant.id),
       qaQuestions,
       polls,
@@ -1826,6 +1881,8 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
         viewerChat: ensureViewerChat(roomId, roomState).statePayload(),
         watchEvent: getWatchCalls(roomState).state(),
       } : {}),
+      ...(admitted && operator && participant.capabilities?.includes('production-rundown')
+        ? { productionRundown: roomState.productionRundown ?? EMPTY_PRODUCTION_RUNDOWN } : {}),
       stageContent: admitted ? roomState.stageContent : undefined,
       stageUploadToken: entry.stageUploadToken,
       ...(admitted && entry.stageReadToken ? { stageReadToken: entry.stageReadToken } : {}),
@@ -1840,6 +1897,7 @@ function sendRoomJoined(ws: WebSocket, roomId: string, roomState: RoomState, ent
         chatOverlay: true,
         viewerChat: true,
         watchEvents: true,
+        productionRundown: true,
       },
     },
   });
@@ -1900,6 +1958,7 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   const requestedRole: Participant['role'] =
     payload.role === 'host' || payload.role === 'co-host' ? payload.role : 'guest';
   const joinSessionId = normalizeJoinSessionId(payload.joinSessionId);
+  const cameraOnly = requestedRole === 'guest' && payload.cameraOnly === true;
   // Sanitize and validate participant name
   const name = (typeof payload.name === 'string' ? payload.name : '').trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, MAX_PARTICIPANT_NAME_LENGTH) || 'Anonymous';
   let knownRoom = rooms.get(roomId);
@@ -1924,7 +1983,7 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   // A dropped connection coming back within the grace window keeps its seat:
   // same participant id, role and place, so healthy media stays connected.
   const resumable = findResumableEntry(roomState, payload.resumeToken);
-  if (resumable) {
+  if (resumable && Boolean(resumable.participant.cameraOnly) === cameraOnly) {
     // A reload may bring a newer (or older) client into the same seat.
     applyClientCapabilities(resumable.participant, payload.capabilities);
     resumeSeat(ws, roomId, roomState, resumable, ip);
@@ -1980,7 +2039,7 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       rejectJoinAttempt(ws, 'Co-host invite link is invalid or expired', 'CO_HOST_INVITE_INVALID');
       return;
     }
-  } else if (requestedRole === 'guest' && hasRedeemedInvite(roomState, joinSessionId, 'co-host', nowMs)) {
+  } else if (requestedRole === 'guest' && !cameraOnly && hasRedeemedInvite(roomState, joinSessionId, 'co-host', nowMs)) {
     // A guest promoted to co-host whose browser still says "guest".
     effectiveRole = 'co-host';
   }
@@ -2103,7 +2162,7 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   } else if (returningStatus) {
     status = returningStatus;
   } else {
-    status = audienceCall || roomState.room.settings.greenRoomEnabled ? 'green-room' : 'on-stage';
+    status = cameraOnly || audienceCall || roomState.room.settings.greenRoomEnabled ? 'green-room' : 'on-stage';
   }
 
   // The host always gets a seat. Everyone else needs a free stage/backstage
@@ -2132,7 +2191,8 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     id: nanoid(8),
     name,
     role: effectiveRole,
-    audioEnabled: true,
+    ...(cameraOnly ? { cameraOnly: true as const } : {}),
+    audioEnabled: !cameraOnly,
     videoEnabled: true,
     screenSharing: false,
     joinedAt: new Date().toISOString(),
@@ -2280,6 +2340,7 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       } else {
         target.participant.status = 'backstage';
         target.participant.screenSharing = false;
+        target.screenShareStreamId = undefined;
         notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Moved to backstage');
       }
       if (admitting) {
@@ -2291,10 +2352,15 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
     case 'move-to-green-room':
       target.participant.status = 'green-room';
       target.participant.screenSharing = false;
+      target.screenShareStreamId = undefined;
       target.stageReadToken = undefined;
       notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Moved to green room');
       break;
     case 'promote-co-host':
+      if (target.participant.cameraOnly) {
+        sendError(ws, 'A secondary camera cannot become a co-host.', 'INVALID_STAGE_ACTION');
+        return;
+      }
       target.participant.role = 'co-host';
       if (!roomState.room.coHostIds.includes(target.participant.id)) {
         roomState.room.coHostIds.push(target.participant.id);
@@ -2334,6 +2400,7 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       });
       break;
     case 'unmute':
+      if (target.participant.cameraOnly) return;
       send(target.ws, {
         type: 'participant-notification',
         payload: {
@@ -2642,6 +2709,36 @@ function handleWatchEventOperatorMessage(
     const invite = createGuestInviteToken(roomState, mapping.participantId, now, 2 * 60_000, true);
     return { roomId: mapping.roomId, guestInvite: invite.token, expiresAt: invite.expiresAt };
   }, now);
+}
+
+function handleProductionRundownUpdate(ws: WebSocket, payload: ProductionRundownUpdate) {
+  const operator = getAdmittedOperator(ws, 'change the production rundown');
+  if (!operator || !isValidRequestId(payload?.requestId)) return;
+  const { mapping, roomState, performer } = operator;
+  if (!performer.participant.capabilities?.includes('production-rundown')) return;
+  const current = roomState.productionRundown ?? EMPTY_PRODUCTION_RUNDOWN;
+  if (!productionRundownRateLimiter.check(ws, 'production-rundown-update').allowed) {
+    send(ws, { type: 'production-rundown-state', payload: { rundown: current, requestId: payload.requestId, error: 'Wait a moment before editing the rundown again.' } });
+    return;
+  }
+  const canTake = payload.action === 'take-item' && mapping.participantId === getStageOwnerId(
+    Array.from(roomState.participants.values(), (entry) => entry.participant)
+  );
+  const result = changeProductionRundown(current, payload, canTake);
+  if ('error' in result) {
+    send(ws, { type: 'production-rundown-state', payload: { rundown: current, requestId: payload.requestId, error: result.error } });
+    return;
+  }
+  roomState.productionRundown = result.rundown;
+  persistRoomSnapshot(mapping.roomId);
+  for (const entry of roomState.participants.values()) {
+    const person = entry.participant;
+    if (!isOperatorRole(person.role) || person.status === 'green-room' || !person.capabilities?.includes('production-rundown')) continue;
+    send(entry.ws, {
+      type: 'production-rundown-state',
+      payload: { rundown: result.rundown, ...(entry.ws === ws ? { requestId: payload.requestId } : {}) },
+    });
+  }
 }
 
 /** The host or co-host behind a viewer chat message, or null (the sender is told why). */
@@ -3411,6 +3508,7 @@ function handleRecordingTransferSignal(
 
   const options = isRecord(payload.options)
     ? {
+        ...(payload.kind === 'invite' && payload.sessionId && payload.options.retrySessionOnly === true ? { retrySessionOnly: true } : {}),
         ...(typeof payload.options.losslessAudio === 'boolean' ? { losslessAudio: payload.options.losslessAudio } : {}),
         ...(typeof payload.options.cloudUpload === 'boolean' ? { cloudUpload: payload.options.cloudUpload } : {}),
       }
@@ -3865,19 +3963,24 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
   }
 
   const entry = roomState.participants.get(mapping.participantId);
-  const screenSharing = entry?.participant.status === 'on-stage' ? payload.screenSharing : false;
+  const cameraOnly = entry?.participant.cameraOnly === true;
+  const audioEnabled = !cameraOnly && payload.audioEnabled;
+  const screenSharing = !cameraOnly && entry?.participant.status === 'on-stage' && payload.screenSharing;
   if (entry) {
-    entry.participant.audioEnabled = payload.audioEnabled;
+    entry.participant.audioEnabled = audioEnabled;
     entry.participant.videoEnabled = payload.videoEnabled;
     entry.participant.screenSharing = screenSharing;
   }
 
-  const screenStreamId = screenSharing && typeof payload.screenStreamId === 'string' && /^[\w-]{1,80}$/.test(payload.screenStreamId)
+  // A mic or camera change omits the stream ID while the share stays active.
+  const announcedStreamId = typeof payload.screenStreamId === 'string' && /^[\w-]{1,80}$/.test(payload.screenStreamId)
     ? payload.screenStreamId
     : undefined;
+  const screenStreamId = screenSharing ? announcedStreamId ?? entry?.screenShareStreamId : undefined;
+  if (entry) entry.screenShareStreamId = screenStreamId;
   const authoritativePayload: MediaStatePayload = {
     participantId: mapping.participantId,
-    audioEnabled: payload.audioEnabled,
+    audioEnabled,
     videoEnabled: payload.videoEnabled,
     screenSharing,
     ...(screenStreamId ? { screenStreamId } : {}),
@@ -5519,7 +5622,7 @@ function finalizeDeparture(roomId: string, roomState: RoomState, participantId: 
           payload: { newHostId, newHostName: newHost.participant.name },
         });
       }
-    } else if (roomState.participants.size > 0) {
+    } else if (roomState.participants.size > 0 && premiereWindowEnd(roomState) <= Date.now()) {
       // No co-host to inherit. Never crown a random guest; hold the room
       // for the host to come back, and end it only if they do not.
       clearHostReconnectTimer(roomState);

@@ -28,6 +28,7 @@ import { checkRtmpDestinationHosts } from './rtmpHostPolicy.js';
 import { countActiveRelaySessions, isRelayCapacityAvailable } from './relayAdmission.js';
 import { admitSecondaryProgram, getDualOutputIssue, isDualOutputSupported, SECONDARY_INPUT_TIMEOUT_MS } from './dualOutput.js';
 import { checkPresentationRenderAdmission } from './presentationAdmission.js';
+import { createPremiereHandler } from './premieres.js';
 import { authorizePresentationRender, isPresentationRenderAuthRequired } from './presentationAuth.js';
 import {
   buildLiveBackupLatestKey,
@@ -1635,6 +1636,8 @@ function getBearerToken(req: IncomingMessage): string {
   return match?.[1]?.trim() || '';
 }
 
+const handlePremiereRequest = createPremiereHandler({ applyCors: applyCorsHeaders, writeJson, getFfmpegPath });
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -2359,6 +2362,7 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   if (await handleLiveBackupRequest(req, res, url)) return;
   if (await handleHeldBroadcastRequest(req, res, url)) return;
   if (await handleWatchRequest(req, res, url)) return;
+  if (await handlePremiereRequest(req, res, url)) return;
   if (await handleRecordingUploadRequest(req, res, url)) return;
   if (await handlePresentationPreviewRequest(req, res, url)) return;
 

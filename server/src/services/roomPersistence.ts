@@ -1,5 +1,6 @@
 import pg from 'pg';
-import type { Room, RoomRegistrant, RoomRegistrationSettings, RoomSettings, RoomStatus, StudioBrandingPayload } from '@studio/shared';
+import { normalizeProductionRundown } from './productionRundown.js';
+import type { ProductionRundown, Room, RoomRegistrant, RoomRegistrationSettings, RoomSettings, RoomStatus, StudioBrandingPayload } from '@studio/shared';
 
 const { Pool } = pg;
 
@@ -33,6 +34,7 @@ export interface RoomSessionSnapshot {
   createdByOwner?: boolean;
   /** Saved before private watch ids: /watch/<roomId> links keep working for it. */
   legacyWatchByRoomId?: boolean;
+  productionRundown?: ProductionRundown;
   recording?: { sessionId: string; startedAt?: string; paused?: boolean };
   bannedJoinSessionIds?: string[];
   bannedIps?: Array<{ ip: string; expiresAt: number }>;
@@ -67,6 +69,9 @@ export function normalizeRoomSessionSnapshot(value: unknown): RoomSessionSnapsho
   if (/^[A-Za-z0-9_-]{12,64}$/.test(watchId)) result.watchId = watchId;
   if (input.createdByOwner === true) result.createdByOwner = true;
   if (input.legacyWatchByRoomId === true) result.legacyWatchByRoomId = true;
+
+  const productionRundown = normalizeProductionRundown(input.productionRundown);
+  if (productionRundown) result.productionRundown = productionRundown;
 
   const recordingInput = input.recording && typeof input.recording === 'object' ? input.recording as Record<string, unknown> : null;
   const recordingSessionId = safeText(recordingInput?.sessionId, 128);
@@ -290,6 +295,7 @@ export function normalizeRoomSnapshot(value: unknown): RoomSnapshot | null {
 
   const hostName = safeText(roomInput.hostName, 50);
   const scheduledFor = safeIsoDate(roomInput.scheduledFor);
+  const registration = normalizeRegistration(roomInput.registration);
   const passwordHash = safeText(input.passwordHash, 256);
   const passwordSalt = safeText(input.passwordSalt, 128);
   const studioBranding = normalizeStudioBranding(input.studioBranding);
@@ -304,8 +310,9 @@ export function normalizeRoomSnapshot(value: unknown): RoomSnapshot | null {
       createdAt,
       status: normalizeRoomStatus(roomInput.status),
       settings: normalizeRoomSettings(roomInput.settings),
-      registration: normalizeRegistration(roomInput.registration),
+      registration,
       ...(scheduledFor ? { scheduledFor } : {}),
+      ...(scheduledFor && registration?.inviteOnly && roomInput.premiere === true ? { premiere: true } : {}),
       ...(hostName ? { hostName } : {}),
     },
     hostToken,
@@ -346,6 +353,8 @@ export function getPostgresRoomSnapshotConfig(env: Record<string, string | undef
 }
 
 export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
+  private readonly pendingWrites = new Map<string, Promise<void>>();
+
   constructor(private readonly db: PgQueryable) {}
 
   async init(): Promise<void> {
@@ -388,7 +397,8 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
 
   async saveRoomSnapshot(snapshot: RoomSnapshot): Promise<void> {
     const normalized = buildPersistentRoomSnapshot(snapshot);
-    await this.db.query(`
+    await this.writeInOrder(normalized.room.id, async () => {
+      await this.db.query(`
       INSERT INTO studio_room_snapshots (
         room_id,
         room,
@@ -415,29 +425,44 @@ export class PostgresRoomSnapshotStore implements RoomSnapshotStore {
         password_salt = EXCLUDED.password_salt,
         session_state = EXCLUDED.session_state,
         updated_at = now()
-    `, [
-      normalized.room.id,
-      JSON.stringify(normalized.room),
-      normalized.hostToken,
-      normalized.creatorIp,
-      normalized.hasBeenJoined,
-      JSON.stringify(normalized.registrants || []),
-      normalized.studioBranding ? JSON.stringify(normalized.studioBranding) : null,
-      normalized.passwordHash || null,
-      normalized.passwordSalt || null,
-      normalized.sessionState ? JSON.stringify(normalized.sessionState) : null,
-      normalized.room.createdAt,
-    ]);
+      `, [
+        normalized.room.id,
+        JSON.stringify(normalized.room),
+        normalized.hostToken,
+        normalized.creatorIp,
+        normalized.hasBeenJoined,
+        JSON.stringify(normalized.registrants || []),
+        normalized.studioBranding ? JSON.stringify(normalized.studioBranding) : null,
+        normalized.passwordHash || null,
+        normalized.passwordSalt || null,
+        normalized.sessionState ? JSON.stringify(normalized.sessionState) : null,
+        normalized.room.createdAt,
+      ]);
+    });
   }
 
   async deleteRoomSnapshot(roomId: string): Promise<void> {
     const normalizedRoomId = safeText(roomId, 80);
     if (!normalizedRoomId) return;
-    await this.db.query('DELETE FROM studio_room_snapshots WHERE room_id = $1', [normalizedRoomId]);
+    await this.writeInOrder(normalizedRoomId, async () => {
+      await this.db.query('DELETE FROM studio_room_snapshots WHERE room_id = $1', [normalizedRoomId]);
+    });
   }
 
   async close(): Promise<void> {
+    await Promise.allSettled(this.pendingWrites.values());
     await this.db.end?.();
+  }
+
+  // The pool can complete writes in a different order from their arrival.
+  // Keep a room's latest rundown and other session state from being overwritten.
+  private writeInOrder(roomId: string, write: () => Promise<void>): Promise<void> {
+    const previous = this.pendingWrites.get(roomId);
+    const pending = (previous ? previous.then(write, write) : write()).finally(() => {
+      if (this.pendingWrites.get(roomId) === pending) this.pendingWrites.delete(roomId);
+    });
+    this.pendingWrites.set(roomId, pending);
+    return pending;
   }
 
   private normalizeRow(row: PgRoomRow): RoomSnapshot | null {

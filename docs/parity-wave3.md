@@ -352,14 +352,15 @@ sound...") instead of a dead slider. The value is kept per room in
   the first co-host while the host is away), so the volume that applies is the
   one set in that browser. A co-host who is not running the program sees a line
   saying so instead of a slider, and their own stored value is ignored.
-- Limits: a guest's share that arrives inside their camera stream (SFU
-  screen-replaces-camera) has its sound mixed into their voice at the source and
-  cannot be turned down separately; it shows no slider. The browser keeps playing
-  a shared tab's own sound on the host's computer: that part is not ours to
-  change, only the monitor of a guest's separate screen tile is. Accepted limit
-  (decided by the project lead): the slider sets how loud the share is for
-  viewers and in the recording; the host's own speakers play the host's own
-  shared tab straight from the browser, at the tab's own volume.
+- On an SFU stage, the screen and its audio use separate peer-to-peer tracks
+  when every on-stage peer has a connected path at the start of sharing. The SFU
+  continues to carry the camera and voice. Each peer receives its own copy of
+  the screen tracks. When a stage peer lacks a connected path at the start, the
+  studio uses the composed SFU feed for that share, with screen audio mixed
+  into the speaker's voice. Restarting the share rechecks the available paths.
+- The slider sets the share volume for viewers, the recording, and the host's
+  monitor of someone else's screen tile. The host's browser plays their own
+  shared tab at that tab's volume.
 
 **Music transport.** The background music panel shows the track name, elapsed
 time, total length and time remaining, and a scrub bar that seeks while playing
@@ -625,6 +626,71 @@ The watch feed receives final captions from the live stage only. Automatic
 speech recognition still depends on the studio operator's browser and guest
 consent. Chromium checks reuse a preset in a different room and play a timed
 caption over local HLS.
+
+## Automated opening and closing
+
+Open **Go Live → Stream screens**. Enable **Show when going live** to show
+the starting screen while the relay connects. The countdown begins once the
+relay is ready. **Skip opening** reveals the stage early. Enable **Show
+before ending stream** and choose the length of the closing screen. You can
+end immediately from the closing screen with **End now**.
+
+For automatic video bumpers, upload a clip in **Media**, then choose it as
+the opening or closing clip. Clip selections are saved in that browser's
+studio setup. The branded screen appears while the clip loads or if it
+cannot play. The duration setting limits how long the clip can hold the
+program. Both broadcast orientations use the same opening or closing.
+During automation the program excludes stage microphone and screen inputs.
+The media bus still carries the clip and other studio media.
+
+## Private prerecorded premieres
+
+Schedule a studio with **Require a private viewing link**, then choose **Set up
+premiere** before entering the studio. Upload one H.264 MP4 with AAC audio, up to
+256 MB and two hours. When storage confirms the upload, copy the private watch
+link. The premiere must start in the next six days and 22 hours so the seven-day
+watch invitation covers the entire playback window. The watch page uses the
+server clock and joins at the current playback position. The host can stay
+offline. Playback runs on the private watch page.
+
+Premieres require Postgres for room snapshots and S3-compatible object storage
+with public access disabled, Range GET, and conditional PUT support. Set
+`PREMIERE_STORAGE_PRIVATE=true` on the media service and leave
+`RECORDING_STORAGE_PUBLIC_BASE_URL` empty. The existing recording storage
+credentials must be able to read, write and delete under the premiere prefix.
+For Amazon S3 the credentials also need `s3:ListBucket` for the applicable
+prefix so storage can distinguish a missing manifest from denied access.
+Keep any storage lifecycle policy consistent with your desired retention of
+scheduled video and manifests.
+
+## Physical recording sync check
+
+Record a dark target with a bright center and a 1 kHz tone source in front of
+two real cameras and microphones. Use a single trigger to light the target and
+play the tone for about 150 to 250 ms. Capture at least three cues spread across
+the take with no similar flashes or tones between them. Keep the target centered
+and large enough to cover the middle third of each picture. Set the audio level
+so the cue is clear without clipping. Leave a second of silence at either end.
+
+Run `node e2e/recording-cues.mjs FILE EXPECTED_CUES` on each camera recording
+and on the program when the target fills its center. Pass a custom luma
+threshold as a third argument if the dark and bright levels require it. The
+report contains signed picture-to-sound offset for each trigger and the change
+between triggers. Both the largest absolute offset and the change must be under
+40 ms. This check complements the packet continuity and byte integrity tests.
+
+## Secondary camera seats
+
+In **Invite → Mobile Join**, choose **Secondary camera** and scan the QR code
+or copy the link. On the second device, name the angle, allow camera access
+and join. The camera waits for admission even when the studio normally lets
+guests join directly. Bring it on stage from the People panel to add it to the
+show.
+
+The second device sends video only and displays a silent local preview. It can
+switch between available cameras. Keep the camera page open until the take is
+saved. Each on-stage camera records its own ISO and uses the same browser
+backup and host-folder transfer as a guest recording.
 
 ## On-air QR codes
 

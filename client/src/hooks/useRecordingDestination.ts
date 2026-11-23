@@ -12,8 +12,9 @@ import {
 } from '../utils/recordingFolderStore.ts';
 import { openTakeFolder, TAKE_MANIFEST_FILE_NAME, type TakeDirectoryHandle, type TakeFolder } from '../utils/recordingTakeFolder.ts';
 import { createFolderRecordingTrackStoreFactory, type RecordingTrackStoreFactory, type RecordingTrackStoreInput } from '../utils/recordingTrackStore.ts';
-import { buildTakeManifest, timelineNow, withClockOffset, type TakeManifestTrackInput } from '../utils/recordingTakeManifest.ts';
+import { buildTakeManifest, timelineNow, withClockOffset, type ExpectedTakeTrack, type TakeManifest, type TakeManifestTrackInput } from '../utils/recordingTakeManifest.ts';
 import { normalizeRecordingCaptureMetadata, type RecordingCaptureMetadata } from '../utils/recordingCaptureMetadata.ts';
+import { readStudioTakes } from '../utils/recordingTakeChecklist.ts';
 import type { ReceivedTrackEntry } from '../utils/recordingTransferSession.ts';
 
 /**
@@ -49,6 +50,9 @@ interface TakeState {
   stoppedAtMs?: number;
   pauses: Array<{ startMs: number; endMs?: number }>;
   tracks: Map<string, TakeManifestTrackInput>;
+  previousTracks: TakeManifest['tracks'];
+  expectedTracks: ExpectedTakeTrack[];
+  timeOrigin: number;
   writeTimer: ReturnType<typeof setTimeout> | null;
   persistedGroups: Set<string>;
 }
@@ -62,6 +66,9 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
   const [persistence, setPersistence] = useState<PersistentStorageResult | null>(null);
   const [preferences, setPreferencesState] = useState<RecordingDestinationPreferences>(readPreferences);
   const takesRef = useRef(new Map<string, TakeState>());
+  const openingRef = useRef(new Map<string, Promise<TakeFolder>>());
+  const [takeManifests, setTakeManifests] = useState<TakeManifest[]>([]);
+  const [takeHistoryError, setTakeHistoryError] = useState<string | null>(null);
   const studioNameRef = useRef(studioName);
   studioNameRef.current = studioName;
 
@@ -138,25 +145,55 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
     });
   }, []);
 
+  useEffect(() => {
+    let current = true;
+    setTakeManifests([]);
+    setTakeHistoryError(null);
+    if (status === 'ready' && handle && roomId) {
+      void readStudioTakes(handle as TakeDirectoryHandle, studioName, roomId).then(stored => {
+        if (!current) return;
+        setTakeManifests(existing => {
+          const known = new Set(existing.map(take => take.takeId));
+          return [...existing, ...stored.map(entry => entry.manifest).filter(take => !known.has(take.takeId))];
+        });
+      }).catch(() => {
+        if (current) setTakeHistoryError('Could not read takes from the recording folder.');
+      });
+    }
+    return () => { current = false; };
+  }, [handle, roomId, status, studioName]);
+
+  const writeManifest = useCallback(async (take: TakeState) => {
+    const folder = await take.folder;
+    const manifest = buildTakeManifest({
+      takeId: take.sessionId,
+      studioName: studioNameRef.current,
+      ...(roomId ? { roomId } : {}),
+      folder: folder.path,
+      startedAtMs: take.startedAtMs,
+      ...(take.stoppedAtMs ? { stoppedAtMs: take.stoppedAtMs } : {}),
+      timeOrigin: take.timeOrigin,
+      pauses: take.pauses,
+      expectedTracks: take.expectedTracks,
+      tracks: [...take.tracks.values()],
+    });
+    const newPaths = new Set(manifest.tracks.map(track => track.path));
+    const newIds = new Set(manifest.tracks.map(track => track.trackId).filter(Boolean));
+    manifest.tracks.unshift(...take.previousTracks.filter(track => !newPaths.has(track.path)
+      && (!track.trackId || !newIds.has(track.trackId))));
+    await folder.writeJson(TAKE_MANIFEST_FILE_NAME, manifest);
+    setTakeManifests(current => [manifest, ...current.filter(item => item.takeId !== manifest.takeId)].slice(0, 20));
+  }, [roomId]);
+
   const scheduleManifest = useCallback((take: TakeState, immediate = false) => {
     if (take.writeTimer) clearTimeout(take.writeTimer);
     const write = () => {
       take.writeTimer = null;
-      void take.folder.then((folder) => folder.writeJson(TAKE_MANIFEST_FILE_NAME, buildTakeManifest({
-        takeId: take.sessionId,
-        studioName: studioNameRef.current,
-        ...(roomId ? { roomId } : {}),
-        folder: folder.path,
-        startedAtMs: take.startedAtMs,
-        ...(take.stoppedAtMs ? { stoppedAtMs: take.stoppedAtMs } : {}),
-        timeOrigin: typeof performance !== 'undefined' ? performance.timeOrigin : take.startedAtMs,
-        pauses: take.pauses,
-        tracks: [...take.tracks.values()],
-      }))).catch((failure) => console.warn('Could not write the take manifest:', failure));
+      void writeManifest(take).catch(() => setTakeHistoryError('Could not update the take checklist on the recording drive.'));
     };
     if (immediate) write();
     else take.writeTimer = setTimeout(write, 1_000);
-  }, [roomId]);
+  }, [writeManifest]);
 
   const openTake = useCallback((sessionId: string, startedAtMs: number, suffix?: string): TakeState => {
     const existing = takesRef.current.get(sessionId);
@@ -167,6 +204,9 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
       startedAtMs,
       pauses: [],
       tracks: new Map(),
+      previousTracks: [],
+      expectedTracks: [],
+      timeOrigin: typeof performance === 'undefined' ? startedAtMs : performance.timeOrigin,
       writeTimer: null,
       persistedGroups: new Set(),
       folder: openTakeFolder(handle as TakeDirectoryHandle, {
@@ -177,17 +217,22 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
     };
     take.folder.catch((failure) => setError(failure instanceof Error ? failure.message : 'Could not create the take folder.'));
     takesRef.current.set(sessionId, take);
-    scheduleManifest(take);
     return take;
-  }, [handle, scheduleManifest]);
+  }, [handle]);
 
   /**
    * Start a take in the folder. Returns storage factories for the program and
    * the host's own tracks, or null when recording falls back to the browser.
    */
-  const beginTake = useCallback(async (sessionId: string, hostName: string, startedAtMs = timelineNow()): Promise<{
+  const beginTake = useCallback(async (
+    sessionId: string,
+    hostName: string,
+    expectedTracks: ExpectedTakeTrack[] = [],
+    startedAtMs = timelineNow(),
+  ): Promise<{
     folder: TakeFolder;
     program: RecordingTrackStoreFactory;
+    noteProgramCaptureStart: (sourceId: string, startedAtMs: number) => void;
     host: RecordingTrackStoreFactory;
     /** Tracks recorded on this computer under another person's (or "Tracks") folder. */
     forParticipant: (participantName: string) => RecordingTrackStoreFactory;
@@ -195,13 +240,26 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
     // Fresh check: a click may have just re-granted access.
     if (!handle || await getRecordingFolderStatus(handle) !== 'ready') return null;
     const take = openTake(sessionId, startedAtMs);
+    take.expectedTracks = expectedTracks;
     let folder: TakeFolder;
-    try { folder = await take.folder; } catch { takesRef.current.delete(sessionId); return null; }
+    try {
+      folder = await take.folder;
+      if (take.writeTimer) clearTimeout(take.writeTimer);
+      take.writeTimer = null;
+      // Record the intended tracks before the first encoder starts.
+      await writeManifest(take);
+    } catch {
+      takesRef.current.delete(sessionId);
+      setTakeHistoryError('Could not create a take checklist on the recording drive. Recording will use browser storage.');
+      return null;
+    }
+    const programStarts = new Map<string, number>();
     const track = (participantName: string, origin: TakeManifestTrackInput['origin']) => ({ id, path, bytes, input }: { id: string; path: string; bytes: number; input: RecordingTrackStoreInput }) => {
+      const programStartedAt = input.sourceId ? programStarts.get(input.sourceId) : undefined;
       take.tracks.set(id, {
         participantName, label: input.label, kind: input.kind, path, mimeType: input.mimeType, bytes, origin, status: 'complete',
         ...(input.mimeType === 'audio/wav' ? { lossless: true } : {}),
-        ...(origin === 'program' ? { capture: programCapture(take, input.mimeType) } : {}),
+        ...(origin === 'program' ? { capture: programCapture(take, input.mimeType, programStartedAt) } : {}),
       });
       scheduleManifest(take);
     };
@@ -220,21 +278,23 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
     return {
       folder,
       program: createFolderRecordingTrackStoreFactory({ take: folder, participantName: programFolder, onTrackFinished: track('Program', 'program') }),
+      noteProgramCaptureStart: (sourceId, startedAtMs) => programStarts.set(sourceId, startedAtMs),
       host: forParticipant(hostName),
       forParticipant,
     };
-  }, [handle, openTake, scheduleManifest]);
+  }, [handle, openTake, scheduleManifest, writeManifest]);
 
   /** Timing for the host's own tracks once the recorder reports it. */
-  const attachCaptures = useCallback((sessionId: string, files: Array<{ label: string; capture?: RecordingCaptureMetadata }>) => {
+  const attachCaptures = useCallback(async (sessionId: string, files: Array<{ label: string; capture?: RecordingCaptureMetadata }>) => {
     const take = takesRef.current.get(sessionId);
     if (!take) return;
     for (const file of files) {
       const entry = [...take.tracks.values()].find((track) => track.label === file.label && track.origin === 'host');
       if (entry && file.capture) entry.capture = file.capture;
     }
-    scheduleManifest(take);
-  }, [scheduleManifest]);
+    try { await writeManifest(take); }
+    catch { setTakeHistoryError('Could not save track timing to the take checklist on the recording drive.'); }
+  }, [writeManifest]);
 
   const notePause = useCallback((sessionId: string, paused: boolean, at = timelineNow()) => {
     const take = takesRef.current.get(sessionId);
@@ -258,16 +318,43 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
   const getTakeFolder = useCallback((sessionId: string): Promise<TakeFolder> => {
     const existing = takesRef.current.get(sessionId);
     if (existing) return existing.folder;
-    return openTake(sessionId, Date.now(), 'recovered').folder;
-  }, [openTake]);
+    const opening = openingRef.current.get(sessionId);
+    if (opening) return opening;
+    const pending = (async () => {
+      const restored = handle && roomId
+        ? (await readStudioTakes(handle as TakeDirectoryHandle, studioNameRef.current, roomId, sessionId))[0]
+        : undefined;
+      if (!restored) {
+        const take = openTake(sessionId, timelineNow(), 'recovered');
+        await writeManifest(take);
+        return take.folder;
+      }
+      const { folder, manifest } = restored;
+      await folder.reserveExistingParticipants();
+      const stoppedAt = manifest.stoppedAt && Date.parse(manifest.stoppedAt);
+      takesRef.current.set(sessionId, {
+        sessionId, folder: Promise.resolve(folder), startedAtMs: manifest.startedAtMs,
+        stoppedAtMs: typeof stoppedAt === 'number' && Number.isFinite(stoppedAt) ? stoppedAt : timelineNow(),
+        pauses: manifest.pauses
+          .filter(pause => pause && Number.isFinite(pause.startOffsetMs) && Number.isFinite(pause.endOffsetMs))
+          .map(pause => ({ startMs: manifest.startedAtMs + pause.startOffsetMs, endMs: manifest.startedAtMs + pause.endOffsetMs })),
+        tracks: new Map(), previousTracks: manifest.tracks, expectedTracks: manifest.expectedTracks ?? [],
+        timeOrigin: manifest.timeOrigin, writeTimer: null, persistedGroups: new Set(),
+      });
+      return folder;
+    })().finally(() => openingRef.current.delete(sessionId));
+    openingRef.current.set(sessionId, pending);
+    return pending;
+  }, [handle, openTake, roomId, writeManifest]);
 
   /** Record a guest track that finished arriving; returns the group's files once all are in. */
-  const recordReceivedTrack = useCallback((entry: ReceivedTrackEntry, clockOffsetMs: number | undefined, groupEntries: ReceivedTrackEntry[]) => {
+  const recordReceivedTrack = useCallback(async (entry: ReceivedTrackEntry, clockOffsetMs: number | undefined, groupEntries: ReceivedTrackEntry[]) => {
     const take = takesRef.current.get(entry.announcement.sessionId);
     if (!take || !entry.path) return null;
     const normalized = normalizeRecordingCaptureMetadata(entry.capture);
     const capture = normalized ? withClockOffset(normalized, clockOffsetMs) : undefined;
     take.tracks.set(entry.id, {
+      trackId: entry.id,
       participantId: entry.participantId,
       participantName: entry.participantName,
       label: entry.announcement.label,
@@ -280,7 +367,7 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
       ...(entry.announcement.lossless ? { lossless: true } : {}),
       ...(capture ? { capture } : {}),
     });
-    scheduleManifest(take);
+    await writeManifest(take);
     // By participant, not display name: two guests called "Maria" are two groups.
     const groupKey = `participant:${entry.participantId}`;
     if (take.persistedGroups.has(groupKey) || groupEntries.some((candidate) => candidate.status === 'receiving')) return null;
@@ -295,7 +382,7 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
         ...(candidateCapture ? { capture: withClockOffset(candidateCapture, clockOffsetMs) } : {}),
       };
     });
-  }, [scheduleManifest]);
+  }, [writeManifest]);
 
   useEffect(() => () => {
     for (const take of takesRef.current.values()) if (take.writeTimer) clearTimeout(take.writeTimer);
@@ -320,22 +407,24 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
     endTake,
     getTakeFolder,
     recordReceivedTrack,
+    takeManifests,
+    takeHistoryError,
   };
 }
 
-function programCapture(take: TakeState, mimeType: string): RecordingCaptureMetadata {
+function programCapture(take: TakeState, mimeType: string, startedAtMs = take.startedAtMs): RecordingCaptureMetadata {
   return {
     sourceId: 'program',
     sourceKind: 'program',
     sourceLabel: 'Program',
     mimeType,
     requestedBitsPerSecond: null,
-    startedAt: new Date(take.startedAtMs).toISOString(),
+    startedAt: new Date(startedAtMs).toISOString(),
     trackCount: 0,
     tracks: [],
     timeline: {
-      startMs: take.startedAtMs,
-      timeOrigin: typeof performance !== 'undefined' ? performance.timeOrigin : take.startedAtMs,
+      startMs: startedAtMs,
+      timeOrigin: take.timeOrigin,
       pauses: take.pauses,
       segmentIndex: 0,
       ...(take.stoppedAtMs ? { stopMs: take.stoppedAtMs } : {}),

@@ -365,6 +365,57 @@ describe('live stream token authorization', () => {
   });
 });
 
+describe('secondary camera seats', () => {
+  it('waits for explicit admission and stays camera-only on stage and after rejoining', async () => {
+    const harness = await createSignalingHarness();
+    const { room, hostToken } = createRoom('Secondary camera test', 'Arnold', {
+      creatorIp: 'secondary-camera-test-' + Date.now(),
+    });
+    const roomState = getRooms().get(room.id);
+    roomState.room.settings.greenRoomEnabled = false;
+    const device = { roomId: room.id, name: 'Wide shot', role: 'guest', cameraOnly: true, joinSessionId: 'camera-browser-0001' };
+
+    try {
+      const host = await connectClient(harness.url);
+      const hostJoined = waitForMessage(host, 'room-joined');
+      joinRoom(host, { roomId: room.id, name: 'Arnold', role: 'host', hostToken });
+      const { payload: hostInfo } = await hostJoined;
+
+      const camera = await connectClient(harness.url);
+      const cameraJoined = waitForMessage(camera, 'room-joined');
+      joinRoom(camera, device);
+      const { payload: first } = await cameraJoined;
+      assert.equal(first.participant.status, 'green-room');
+      assert.equal(first.participant.cameraOnly, true);
+      assert.equal(first.participant.audioEnabled, false);
+
+      const cameraId = first.participant.id;
+      const staged = waitForMessage(host, 'participant-updated', message => message.payload.id === cameraId && message.payload.status === 'on-stage');
+      sendSignal(host, { type: 'stage-action', payload: { action: 'move-to-stage', targetParticipantId: cameraId, performedBy: hostInfo.participant.id } });
+      await staged;
+
+      const media = waitForMessage(host, 'media-state-changed', message => message.payload.participantId === cameraId);
+      sendSignal(camera, { type: 'media-state-changed', payload: { participantId: cameraId, videoEnabled: true, audioEnabled: true, screenSharing: true, screenStreamId: 'fake-screen' } });
+      assert.deepEqual((await media).payload, { participantId: cameraId, videoEnabled: true, audioEnabled: false, screenSharing: false });
+
+      const promotion = waitForMessage(host, 'error', message => message.payload.code === 'INVALID_STAGE_ACTION');
+      sendSignal(host, { type: 'stage-action', payload: { action: 'promote-co-host', targetParticipantId: cameraId, performedBy: hostInfo.participant.id } });
+      await promotion;
+
+      const again = await connectClient(harness.url);
+      const rejoined = waitForMessage(again, 'room-joined');
+      joinRoom(again, { ...device, resumeToken: first.resumeToken });
+      const { payload: resumed } = await rejoined;
+      assert.equal(resumed.participant.id, cameraId);
+      assert.equal(resumed.participant.status, 'on-stage');
+      assert.equal(resumed.participant.cameraOnly, true);
+      assert.equal(resumed.participant.audioEnabled, false);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe('returning guests', () => {
   it('puts an admitted guest who reconnects straight back in their place, not the green room', async () => {
     const harness = await createSignalingHarness();
@@ -845,6 +896,26 @@ describe('progressive recording upload reporting', () => {
       assert.equal(received.payload.fromParticipantId, hostId);
       assert.equal(received.payload.sessionId, 'recording-progress-123');
       assert.deepEqual(received.payload.options, { losslessAudio: true, cloudUpload: false });
+
+      const requested = waitForMessage(guest, 'recording-transfer-signal');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: {
+          targetParticipantId: guestId,
+          transferId: 'take-retry',
+          kind: 'invite',
+          sessionId: 'recording-progress-123',
+          options: { retrySessionOnly: true },
+        },
+      });
+      assert.equal((await requested).payload.options.retrySessionOnly, true);
+
+      const unscoped = waitForMessage(guest, 'recording-transfer-signal');
+      sendSignal(host, {
+        type: 'recording-transfer-signal',
+        payload: { targetParticipantId: guestId, transferId: 'unscoped', kind: 'invite', options: { retrySessionOnly: true } },
+      });
+      assert.equal((await unscoped).payload.options.retrySessionOnly, undefined);
 
       const offer = waitForMessage(host, 'recording-transfer-signal');
       sendSignal(guest, {
@@ -1574,10 +1645,34 @@ describe('participant media moderation', () => {
           audioEnabled: true,
           videoEnabled: true,
           screenSharing: true,
+          screenStreamId: 'separate-screen-1',
         },
       });
-      await screenStarted;
+      assert.equal((await screenStarted).payload.screenStreamId, 'separate-screen-1');
       assert.equal(roomState.participants.get(backstageGuestState.payload.participant.id)?.participant.screenSharing, true);
+
+      const sharerId = backstageGuestState.payload.participant.id;
+      const screenWhileMuted = waitForMessage(host, 'media-state-changed', (message) => (
+        message.payload.participantId === sharerId && message.payload.audioEnabled === false
+      ));
+      sendSignal(backstageGuest, {
+        type: 'media-state-changed',
+        payload: { participantId: sharerId, audioEnabled: false, videoEnabled: true, screenSharing: true },
+      });
+      assert.equal((await screenWhileMuted).payload.screenStreamId, 'separate-screen-1');
+
+      const lateStageGuest = await connectClient(harness.url);
+      const lateStageGuestJoined = waitForMessage(lateStageGuest, 'room-joined');
+      joinRoom(lateStageGuest, { roomId: room.id, name: 'Late stage guest', role: 'guest' });
+      assert.deepEqual((await lateStageGuestJoined).payload.screenShareStreams, [
+        { participantId: sharerId, streamId: 'separate-screen-1' },
+      ]);
+
+      roomState.room.settings.greenRoomEnabled = true;
+      const waitingGuest = await connectClient(harness.url);
+      const waitingGuestJoined = waitForMessage(waitingGuest, 'room-joined');
+      joinRoom(waitingGuest, { roomId: room.id, name: 'Waiting guest', role: 'guest' });
+      assert.equal((await waitingGuestJoined).payload.screenShareStreams, undefined);
 
       const backstageUpdated = waitForMessage(backstageGuest, 'participant-updated', (message) => (
         message.payload.id === backstageGuestState.payload.participant.id &&
@@ -1660,6 +1755,7 @@ describe('participant media moderation', () => {
       });
       const normalizedClaim = await offStageScreenClaim;
       assert.equal(normalizedClaim.payload.screenSharing, false);
+      assert.equal(normalizedClaim.payload.screenStreamId, undefined);
       assert.equal(roomState.participants.get(backstageGuestState.payload.participant.id)?.participant.screenSharing, false);
     } finally {
       await harness.close();

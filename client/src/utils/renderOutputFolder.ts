@@ -124,6 +124,27 @@ function memoryOutput(): RenderOutputFolder {
   };
 }
 
+/** Temporary preview output, separate from standard exports and other editor tabs. */
+export async function createPreviewRenderOutput(fileName: string, mimeType: string): Promise<RenderOutputFile> {
+  const storage = globalThis.navigator?.storage;
+  if (typeof storage?.getDirectory === 'function') {
+    try {
+      const root = await storage.getDirectory();
+      const previews = await root.getDirectoryHandle('studio-mix-previews', { create: true });
+      const name = `${crypto.randomUUID()}${splitFileName(fileName).extension}`;
+      try {
+        return await directoryOutput('browser-storage', 'Preview', previews, true).createFile(name, mimeType);
+      } catch (error) {
+        await previews.removeEntry(name).catch(() => {});
+        throw error;
+      }
+    } catch {
+      // A short preview can still be held in memory.
+    }
+  }
+  return memoryOutput().createFile(fileName, mimeType);
+}
+
 type DirectoryPicker = (options: { id: string; mode: 'readwrite' }) => Promise<WritableDirectoryHandle>;
 
 export interface OpenRenderOutputOptions {

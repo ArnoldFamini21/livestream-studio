@@ -114,6 +114,8 @@ services:
         value: livestream-studio
       - key: RECORDING_STORAGE_PUBLIC_BASE_URL
         sync: false
+      - key: PREMIERE_STORAGE_PRIVATE
+        sync: false
       # One broadcast at a time on the free instance.
       - key: MAX_RELAY_SESSIONS
         value: "1"

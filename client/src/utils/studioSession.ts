@@ -62,6 +62,7 @@ export interface StudioJoinInput {
   roomId: string;
   name: string;
   role: ParticipantRole;
+  cameraOnly?: boolean;
   hostToken?: string;
   coHostInviteToken?: string;
   guestInviteToken?: string;
@@ -83,6 +84,7 @@ export function buildStudioJoinPayload(input: StudioJoinInput): JoinRoomPayload 
     // What this client understands, so peers send it only what it can handle (program return, talkback).
     capabilities: [...STUDIO_CAPABILITIES],
   };
+  if (input.role === 'guest' && input.cameraOnly) payload.cameraOnly = true;
   if (input.role === 'host' && input.hostToken) payload.hostToken = input.hostToken;
   if (input.role === 'host' && input.restoreTicket) payload.restoreTicket = input.restoreTicket;
   // Proves the owner's older studios are theirs (YouTube/Facebook chat keys, restore after restarts).

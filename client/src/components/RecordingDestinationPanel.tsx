@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import type { TakeChecklist, TakeReceiptState } from '../utils/recordingTakeChecklist.ts';
 import type { ParticipantTransferSummary } from '../utils/recordingTransferSession.ts';
 import type { RecordingDestinationPreferences } from '../hooks/useRecordingDestination.ts';
 import type { RecordingFolderStatus } from '../utils/recordingFolderStore.ts';
@@ -10,6 +12,10 @@ export interface RecordingDestinationPanelProps {
   preferences: RecordingDestinationPreferences;
   cloudAvailable: boolean;
   transfers: ParticipantTransferSummary[];
+  checklists: TakeChecklist[];
+  checklistError: string | null;
+  retryableGuests: ReadonlySet<string>;
+  onRetryGuestTake: (takeId: string, participantId: string) => boolean;
   disabled?: boolean;
   onChooseFolder: () => void;
   onReconnectFolder: () => void;
@@ -101,6 +107,13 @@ export function RecordingDestinationPanel(props: RecordingDestinationPanelProps)
       {props.persisted === false && status !== 'ready' && (
         <p className="recording-folder-save-help">The browser may clear its storage when the disk is nearly full; save takes to a folder soon after recording.</p>
       )}
+      {status === 'ready' && <RecordingTakeChecklists
+        takes={props.checklists}
+        error={props.checklistError}
+        disabled={props.disabled}
+        retryableGuests={props.retryableGuests}
+        onRetry={props.onRetryGuestTake}
+      />}
       {props.error && <p role="alert" className="recording-folder-save-error">{props.error}</p>}
       {props.transfers.length > 0 && (
         <ul style={{ listStyle: 'none', margin: '8px 0 0', padding: 0, fontSize: 11 }} aria-label="Guest track transfers">
@@ -115,6 +128,63 @@ export function RecordingDestinationPanel(props: RecordingDestinationPanelProps)
         </ul>
       )}
     </section>
+  );
+}
+
+const receiptLabels: Record<TakeReceiptState, string> = {
+  recording: 'Recording',
+  transferring: 'Transferring',
+  missing: 'Missing',
+  verified: 'Verified',
+};
+
+function RecordingTakeChecklists({ takes, error, disabled, retryableGuests, onRetry }: {
+  takes: TakeChecklist[];
+  error: string | null;
+  disabled?: boolean;
+  retryableGuests: ReadonlySet<string>;
+  onRetry: (takeId: string, participantId: string) => boolean;
+}) {
+  const [selected, setSelected] = useState('');
+  const [notice, setNotice] = useState<{ take: string; message: string } | null>(null);
+  const take = takes.find(item => item.id === selected) ?? takes[0];
+  const retries = new Map<string, string>();
+  for (const row of take?.rows ?? []) {
+    if (row.state === 'missing' && row.participantId && row.participantName && retryableGuests.has(row.participantId)) {
+      retries.set(row.participantId, row.participantName);
+    }
+  }
+  return (
+    <details className="recording-take-checklist">
+      <summary>Take checklist</summary>
+      {error && <p role="alert" className="recording-folder-save-error">{error}</p>}
+      {!take && <p>Your folder has no saved takes for this studio yet.</p>}
+      {take && <>
+        <label>
+          <span>Take</span>
+          <select value={take.id} onChange={event => setSelected(event.target.value)}>
+            {takes.map(item => <option key={item.id} value={item.id}>{new Date(item.startedAt).toLocaleString()}</option>)}
+          </select>
+        </label>
+        <ul aria-label="Tracks in the selected take">
+          {take.rows.map(row => <li key={row.key}>
+            <span>{row.label}</span>
+            <span data-state={row.state}>{receiptLabels[row.state]}</span>
+          </li>)}
+        </ul>
+        {[...retries].map(([guest, name]) => (
+          <button key={guest} type="button" className="recording-folder-save-button"
+            disabled={disabled || take.rows.some(row => row.participantId === guest && row.state === 'transferring')}
+            onClick={() => {
+              const sent = onRetry(take.id, guest);
+              setNotice({ take: take.id, message: sent
+                ? 'Requested the missing tracks. The guest’s original recording must still be available in their browser.'
+                : 'The guest must be admitted to this studio before their tracks can be requested.' });
+            }}>Request tracks from {name}</button>
+        ))}
+        {notice?.take === take.id && <p role="status">{notice.message}</p>}
+      </>}
+    </details>
   );
 }
 

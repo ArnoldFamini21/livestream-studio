@@ -2,6 +2,9 @@ export * from './clientErrors.js';
 export * from './chatOverlay.js';
 export * from './viewerChat.js';
 export * from './watchEvents.js';
+export * from './productionRundown.js';
+export * from './premieres.js';
+import type { ProductionRundown, ProductionRundownStateMessage, ProductionRundownUpdate } from './productionRundown.js';
 import type { WatchEventState } from './watchEvents.js';
 import type { ChatOverlayState, ChatOverlayUpdatePayload, ChatOverlayUpdatedPayload } from './chatOverlay.js';
 import type { ViewerChatStatePayload, ViewerChatSwitches, ViewerBlockScope } from './viewerChat.js';
@@ -17,6 +20,7 @@ export interface Room {
   status: RoomStatus;
   settings: RoomSettings;
   scheduledFor?: string;
+  premiere?: true;
   hostName?: string;
   registration?: RoomRegistrationSettings;
 }
@@ -314,6 +318,8 @@ export interface Participant {
   screenSharing: boolean;
   joinedAt: string;
   status: ParticipantStatus;
+  /** This guest joined as a dedicated silent camera. */
+  cameraOnly?: true;
   /** Optional name-tag subtitle a host set, e.g. "Author, The Long Game". */
   title?: string;
   /**
@@ -330,7 +336,7 @@ export interface Participant {
  *   program-return-announce) instead of taking it for a screen share.
  * - 'talkback': silences other operators' talkback-state in its program mix.
  */
-export const STUDIO_CAPABILITIES = ['program-return', 'talkback', 'watch-events'] as const;
+export const STUDIO_CAPABILITIES = ['program-return', 'talkback', 'watch-events', 'production-rundown'] as const;
 export type StudioCapability = typeof STUDIO_CAPABILITIES[number];
 
 const STUDIO_CAPABILITY_SET: ReadonlySet<string> = new Set(STUDIO_CAPABILITIES);
@@ -511,6 +517,8 @@ export type SignalMessage =
   | { type: 'watch-event-settings'; payload: { callInsEnabled: boolean } }
   | { type: 'watch-call-in-decide'; payload: { id: string; decision: 'approve' | 'decline' } }
   | { type: 'watch-event-state'; payload: WatchEventState }
+  | { type: 'production-rundown-update'; payload: ProductionRundownUpdate }
+  | { type: 'production-rundown-state'; payload: ProductionRundownStateMessage }
   | { type: 'co-host-invite-token-request'; payload: CoHostInviteTokenRequestPayload }
   | { type: 'co-host-invite-token-issued'; payload: CoHostInviteTokenIssuedPayload }
   | { type: 'participant-updated'; payload: Participant }
@@ -528,6 +536,7 @@ export interface JoinRoomPayload {
   roomId: string;
   name: string;
   role: ParticipantRole;
+  cameraOnly?: true;
   hostToken?: string;
   coHostInviteToken?: string;
   guestInviteToken?: string;
@@ -555,6 +564,8 @@ export interface RoomJoinedPayload {
   room: Room;
   participant: Participant;
   participants: Participant[];
+  /** Active independent screen streams from peers this seat may exchange media with. */
+  screenShareStreams?: Array<{ participantId: string; streamId: string }>;
   chatMessages?: ChatMessage[];
   qaQuestions?: QAQuestion[];
   polls?: LivePoll[];
@@ -569,6 +580,8 @@ export interface RoomJoinedPayload {
   viewerChat?: ViewerChatStatePayload;
   /** Admitted hosts and co-hosts only. */
   watchEvent?: WatchEventState;
+  /** Admitted operators with rundown support only. */
+  productionRundown?: ProductionRundown;
   /** What the host has on stage (a slide, an image), mirrored to everyone. */
   stageContent?: StageContentPayload;
   /** Hosts and co-hosts only: authorizes uploads to `/api/rooms/:id/stage-images`. */
@@ -595,6 +608,7 @@ export interface RoomJoinedPayload {
     /** The server understands the viewer chat messages (`viewer-chat-*`). */
     viewerChat?: boolean;
     watchEvents?: boolean;
+    productionRundown?: boolean;
   };
   /**
    * Admitted hosts and co-hosts only: the other operators talking backstage
@@ -924,6 +938,8 @@ export interface RecordingUploadControlPayload {
 export type RecordingTransferSignalKind = 'invite' | 'offer' | 'answer' | 'hangup' | 'ready';
 
 export interface RecordingTransferSignalOptions {
+  /** Re-offer only retained, undelivered tracks for the invited recording session. */
+  retrySessionOnly?: boolean;
   /** Ask participants to also capture a lossless 48 kHz WAV of their microphone. */
   losslessAudio?: boolean;
   /** Keep the media-server upload running beside the peer-to-peer transfer. */

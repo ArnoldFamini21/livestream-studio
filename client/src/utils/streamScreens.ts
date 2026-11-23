@@ -13,6 +13,9 @@ export interface StreamScreenDraft {
   backgroundMode: StreamScreenBackgroundMode;
   showLogo: boolean;
   countdownSeconds?: number;
+  automatic?: boolean;
+  holdSeconds?: number;
+  videoAssetId?: string;
 }
 
 export interface StreamScreenConfig {
@@ -35,6 +38,15 @@ export const MAX_STREAM_SCREEN_HEADLINE_LENGTH = 90;
 export const MAX_STREAM_SCREEN_MESSAGE_LENGTH = 240;
 export const MIN_STREAM_SCREEN_COUNTDOWN_SECONDS = 0;
 export const MAX_STREAM_SCREEN_COUNTDOWN_SECONDS = 3600;
+export const MIN_CLOSING_SCREEN_SECONDS = 3;
+export const MAX_CLOSING_SCREEN_SECONDS = 60;
+const DEFAULT_CLOSING_SCREEN_SECONDS = 8;
+
+export function getBroadcastScreenDuration(config: StreamScreenConfig, kind: StreamScreenKind): number {
+  const screen = config[kind];
+  if (!screen.automatic) return 0;
+  return kind === 'starting' ? screen.countdownSeconds ?? 0 : screen.holdSeconds ?? DEFAULT_CLOSING_SCREEN_SECONDS;
+}
 
 export const DEFAULT_STREAM_SCREEN_CONFIG: StreamScreenConfig = {
   starting: {
@@ -81,6 +93,13 @@ export function normalizeStreamScreenDraft(kind: StreamScreenKind, value: unknow
     message: normalizeText(value.message, MAX_STREAM_SCREEN_MESSAGE_LENGTH, fallback.message),
     backgroundMode: value.backgroundMode === 'stage' ? 'stage' : 'brand',
     showLogo: typeof value.showLogo === 'boolean' ? value.showLogo : fallback.showLogo,
+    ...(value.automatic === true ? { automatic: true } : {}),
+    ...(typeof value.videoAssetId === 'string' && /^[a-zA-Z0-9_-]{1,120}$/.test(value.videoAssetId)
+      ? { videoAssetId: value.videoAssetId }
+      : {}),
+    ...(kind === 'ending' && typeof value.holdSeconds === 'number' && Number.isFinite(value.holdSeconds)
+      ? { holdSeconds: Math.max(MIN_CLOSING_SCREEN_SECONDS, Math.min(MAX_CLOSING_SCREEN_SECONDS, Math.round(value.holdSeconds))) }
+      : {}),
     countdownSeconds: kind === 'starting'
       ? normalizeCountdownSeconds(value.countdownSeconds, fallback.countdownSeconds)
       : undefined,

@@ -1,5 +1,7 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import type { Participant, ParticipantStatus, LayoutMode, StageActionPayload } from '@studio/shared';
+import type { ComponentProps } from 'react';
+import { ProductionRundown } from './ProductionRundown.tsx';
 import { getPresentingViewLabel, getStudioLayoutLabel, PRESENTING_VIEWS, STUDIO_LAYOUT_PRESET_ORDER, type PresentingView } from '../utils/layoutPresets.ts';
 
 interface ProducerPanelProps {
@@ -24,6 +26,7 @@ interface ProducerPanelProps {
   focusedParticipantId: string | null;
   onSpotlightParticipant: (participantId: string | null) => void;
 
+  rundown?: ComponentProps<typeof ProductionRundown>;
   onClose: () => void;
 }
 
@@ -340,9 +343,11 @@ export function ProducerPanel({
   presenterCount = 1,
   focusedParticipantId,
   onSpotlightParticipant,
+  rundown,
   onClose,
 }: ProducerPanelProps) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [showRundown, setShowRundown] = useState(false);
 
   // Derive participant lists
   const { onStage, allParticipants, counts } = useMemo(() => {
@@ -442,19 +447,25 @@ export function ProducerPanel({
             )}
           </div>
         </div>
-        <button style={styles.closeBtn} onClick={onClose} title="Exit Producer Mode">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-          <span style={styles.closeBtnText}>Exit</span>
-        </button>
+        <div className="production-rundown-actions">
+          {rundown && <button className="btn-secondary" type="button" aria-pressed={showRundown} onClick={() => setShowRundown(open => !open)}>
+            {rundown.connection.rundown?.cueItemId ? 'Rundown · Cue ready' : 'Rundown'}
+          </button>}
+          <button style={styles.closeBtn} onClick={onClose} title="Exit Producer Mode">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+            <span style={styles.closeBtnText}>Exit</span>
+          </button>
+        </div>
       </div>
 
       {/* ====== Main Content ====== */}
       <div style={styles.main}>
         {/* ====== Left Panel (Stage Preview + Layout) ====== */}
         <div style={styles.leftPanel}>
+          {showRundown && rundown ? <ProductionRundown {...rundown} /> : <>
           {/* Stage Preview */}
           <div style={styles.previewSection}>
             <div style={styles.sectionHeader}>
@@ -538,6 +549,7 @@ export function ProducerPanel({
               })}
             </div>
           </div>
+          </>}
         </div>
 
         {/* ====== Right Panel (Participants) ====== */}

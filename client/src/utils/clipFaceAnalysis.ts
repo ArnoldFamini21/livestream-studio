@@ -45,28 +45,24 @@ async function createFaceDetector(): Promise<Detector> {
   }
 }
 
-function seek(video: HTMLVideoElement, seconds: number): Promise<void> {
+function waitForAnalysisMedia(video: HTMLVideoElement, event: 'seeked' | 'loadeddata', signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error('Seeking for face analysis timed out'));
-    }, 8000);
-    const onSeeked = () => {
-      cleanup();
-      resolve();
-    };
-    const onError = () => {
-      cleanup();
-      reject(new Error('The clip source could not be read for face analysis'));
-    };
-    const cleanup = () => {
+    signal?.throwIfAborted();
+    const finish = (error?: unknown) => {
       clearTimeout(timer);
-      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener(event, onReady);
       video.removeEventListener('error', onError);
+      signal?.removeEventListener('abort', onAbort);
+      if (error) reject(error);
+      else resolve();
     };
-    video.addEventListener('seeked', onSeeked);
+    const onReady = () => finish();
+    const onError = () => finish(new Error('The clip source could not be read for face analysis'));
+    const onAbort = () => finish(signal?.reason);
+    const timer = setTimeout(() => finish(new Error('The clip source did not respond for face analysis')), 8000);
+    video.addEventListener(event, onReady);
     video.addEventListener('error', onError);
-    video.currentTime = seconds;
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -99,6 +95,7 @@ export async function sampleClipFaces(
   onProgress?: (fraction: number) => void,
   signal?: AbortSignal
 ): Promise<FaceSample[]> {
+  signal?.throwIfAborted();
   const detector = await createFaceDetector();
   const url = URL.createObjectURL(blob);
   const video = document.createElement('video');
@@ -109,19 +106,23 @@ export async function sampleClipFaces(
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d', { willReadFrequently: true });
   try {
+    signal?.throwIfAborted();
     if (!context) throw new Error('Canvas rendering is unavailable');
-    await new Promise<void>((resolve, reject) => {
-      video.addEventListener('loadeddata', () => resolve(), { once: true });
-      video.addEventListener('error', () => reject(new Error('The clip source could not be loaded for face analysis')), { once: true });
-    });
+    if (video.readyState < 2) await waitForAnalysisMedia(video, 'loadeddata', signal);
     const scale = Math.min(1, ANALYSIS_FRAME_WIDTH / Math.max(1, video.videoWidth));
     canvas.width = Math.max(2, Math.round(video.videoWidth * scale));
     canvas.height = Math.max(2, Math.round(video.videoHeight * scale));
     const times = planFaceSampleTimes(range.endSeconds - range.startSeconds);
     const samples: FaceSample[] = [];
     for (const [index, seconds] of times.entries()) {
-      if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
-      await seek(video, range.startSeconds + seconds);
+      signal?.throwIfAborted();
+      const sourceTime = range.startSeconds + seconds;
+      if (video.currentTime !== sourceTime) {
+        const seeked = waitForAnalysisMedia(video, 'seeked', signal);
+        video.currentTime = sourceTime;
+        await seeked;
+      }
+      signal?.throwIfAborted();
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       const result = detector.detect(canvas);
       samples.push({ seconds, faces: toFaceBoxes(result.detections || [], canvas.width, canvas.height) });
@@ -143,17 +144,20 @@ export async function sampleClipFaces(
 export async function measureSpeakerActivity(
   tracks: Blob[],
   range: { startSeconds: number; endSeconds: number },
-  stepSeconds = FACE_SAMPLE_SECONDS
+  stepSeconds = FACE_SAMPLE_SECONDS,
+  signal?: AbortSignal
 ): Promise<SpeakerActivity | null> {
   if (tracks.length < 2) return null;
   const { openAudioWindowReader } = await import('./audioWindowReader.ts');
   const levels: number[][] = [];
   for (const track of tracks) {
+    signal?.throwIfAborted();
     const reader = await openAudioWindowReader(track).catch(() => null);
     if (!reader) return null;
     try {
       const trackLevels: number[] = [];
       for (let t = range.startSeconds; t < range.endSeconds; t += stepSeconds) {
+        signal?.throwIfAborted();
         trackLevels.push(computeRms(await reader.readWindow(t, Math.min(range.endSeconds, t + stepSeconds))));
       }
       levels.push(trackLevels);

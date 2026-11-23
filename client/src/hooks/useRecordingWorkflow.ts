@@ -10,6 +10,9 @@ import {
   type RecordingStorageHeadroom,
 } from '../utils/recordingFolderStore.ts';
 import type { RecordingTrackStoreFactory } from '../utils/recordingTrackStore.ts';
+import { buildTakeChecklist, expectedGuestTracks } from '../utils/recordingTakeChecklist.ts';
+import type { ExpectedTakeTrack } from '../utils/recordingTakeManifest.ts';
+import { isTransferParticipant } from '../utils/recordingTransferPolicy.ts';
 import type { TakeFolder } from '../utils/recordingTakeFolder.ts';
 import type { ReceivedTrackEntry, TransferSourceTrack } from '../utils/recordingTransferSession.ts';
 import type { RecordingCaptureMetadata } from '../utils/recordingCaptureMetadata.ts';
@@ -38,6 +41,7 @@ export interface ActiveTakeStorage {
   sessionId: string;
   folder: TakeFolder;
   program: RecordingTrackStoreFactory;
+  noteProgramCaptureStart: (sourceId: string, startedAtMs: number) => void;
   /** The host's own tracks (and other locally recorded tracks) under a person's folder. */
   forParticipant(name: string): RecordingTrackStoreFactory;
 }
@@ -60,6 +64,7 @@ interface UseRecordingWorkflowOptions {
   cloudAvailable: boolean;
   /** Recording, live or on stage: keep the screen awake. */
   keepAwake: boolean;
+  reviewOpen: boolean;
   /** Guest: this page's recorder tracks that can be sent to the host. */
   getLocalTracks: () => TransferSourceTrack[];
   localTracksVersion: number;
@@ -96,13 +101,13 @@ export function useRecordingWorkflow(options: UseRecordingWorkflowOptions) {
     hostReceiving,
     hostOptions,
     getTakeFolder: destination.getTakeFolder,
-    onTrackReceived: (entry: ReceivedTrackEntry) => {
+    onTrackReceived: async (entry: ReceivedTrackEntry) => {
       const registry = registryRef.current;
       if (!registry) return;
       const group = [...registry.tracks.values()].filter((candidate) => (
         candidate.participantId === entry.participantId && candidate.announcement.sessionId === entry.announcement.sessionId
       ));
-      const files = destination.recordReceivedTrack(entry, registry.getClockOffset(entry.participantId), group);
+      const files = await destination.recordReceivedTrack(entry, registry.getClockOffset(entry.participantId), group);
       if (files?.length) {
         try { optionsRef.current.onGuestTracksSaved?.(entry.participantName, files); } catch { /* Library is best-effort. */ }
       }
@@ -150,13 +155,19 @@ export function useRecordingWorkflow(options: UseRecordingWorkflowOptions) {
   }, [destination]);
 
   /** Open the take folder and storage for the program and local tracks; null means browser storage. */
-  const beginTake = useCallback(async (sessionId: string, hostName: string): Promise<ActiveTakeStorage | null> => {
-    const started = await destination.beginTake(sessionId, hostName);
+  const beginTake = useCallback(async (
+    sessionId: string,
+    hostName: string,
+    planned?: ExpectedTakeTrack[],
+  ): Promise<ActiveTakeStorage | null> => {
+    const expected = planned ? [...planned, ...expectedGuestTracks(optionsRef.current.participants.values())] : [];
+    const started = await destination.beginTake(sessionId, hostName, expected);
     if (!started) return null;
     const take: ActiveTakeStorage = {
       sessionId,
       folder: started.folder,
       program: started.program,
+      noteProgramCaptureStart: started.noteProgramCaptureStart,
       forParticipant: started.forParticipant,
     };
     activeTakesRef.current.set(sessionId, take);
@@ -175,6 +186,25 @@ export function useRecordingWorkflow(options: UseRecordingWorkflowOptions) {
 
   const notePause = destination.notePause;
   const attachCaptures = destination.attachCaptures;
+
+  const takeChecklists = useMemo(() => {
+    if (!options.reviewOpen) return [];
+    const connected = new Set(transfer.summaries.filter(summary => summary.connected).map(summary => summary.participantId));
+    const byTake = new Map<string, ReceivedTrackEntry[]>();
+    for (const entry of transfer.registry.tracks.values()) {
+      const entries = byTake.get(entry.announcement.sessionId);
+      if (entries) entries.push(entry);
+      else byTake.set(entry.announcement.sessionId, [entry]);
+    }
+    return [...destination.takeManifests]
+      .sort((first, second) => second.startedAtMs - first.startedAtMs)
+      .map(manifest => buildTakeChecklist(
+        manifest, byTake.get(manifest.takeId) ?? [], activeTakesRef.current.has(manifest.takeId), connected,
+      ));
+  }, [destination.takeManifests, options.reviewOpen, transfer.registry, transfer.summaries]);
+  const retryableGuests = useMemo(() => new Set(
+    [...options.participants.values()].filter(isTransferParticipant).map(participant => participant.id),
+  ), [options.participants]);
 
   const isGuest = !options.isOperator;
   /** Upload this page's tracks to the media-server? Off when the host collects them directly. */
@@ -201,7 +231,9 @@ export function useRecordingWorkflow(options: UseRecordingWorkflowOptions) {
     endTake,
     notePause,
     attachCaptures,
-    waitForHostSettled: transfer.waitForHostSettled,
+    takeChecklists,
+    retryableGuests,
+    retryGuestTake: transfer.retryGuestTake,
     waitForDelivery: transfer.waitForDelivery,
   };
 }

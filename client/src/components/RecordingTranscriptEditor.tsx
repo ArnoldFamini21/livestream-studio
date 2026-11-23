@@ -182,6 +182,10 @@ export function RecordingTranscriptEditor({
             draft: project.edit,
             onChange: (edit) => setProject((current) => current && { ...current, edit }),
             captionStyle,
+            mix: {
+              settings: project.mix,
+              onChange: (mix) => setProject((current) => current && { ...current, mix }),
+            },
           }}
           onDownload={onDownload}
         />}

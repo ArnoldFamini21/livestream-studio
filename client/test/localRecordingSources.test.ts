@@ -132,6 +132,22 @@ describe('local recording source planner', () => {
     );
   });
 
+  it('creates a video-only ISO for a secondary camera on stage', () => {
+    const camera = participant({ id: 'second-camera', name: 'Wide shot', cameraOnly: true });
+    const options = {
+      localParticipant: camera,
+      localStream: stream(track('wide-video', 'video'), track('unexpected-mic', 'audio')),
+      screenStream: stream(track('screen-video', 'video')),
+      isScreenSharing: true,
+    };
+    const sources = buildParticipantRecordingSources(options);
+    assert.deepEqual(sources.map(source => [source.id, source.label, source.kind]), [
+      ['second-camera-iso', 'Wide shot ISO', 'iso'],
+    ]);
+    assert.deepEqual(sources[0].stream.getTracks().map(track => track.id), ['wide-video']);
+    assert.deepEqual(buildParticipantRecordingSources({ ...options, localParticipant: { ...camera, status: 'backstage' } }), []);
+  });
+
   it('records screen-share participants as screen/video tracks without duplicate ISO', () => {
     const screenParticipant = participant({
       id: 'guest-screen',

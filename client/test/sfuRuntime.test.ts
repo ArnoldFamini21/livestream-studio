@@ -4,6 +4,7 @@ import type { Participant } from '@studio/shared';
 import {
   getSfuSessionParticipantId,
   mergeSfuMediaWithMeshFallback,
+  shouldUseSeparateScreenShare,
   shouldUseSfuMedia,
 } from '../src/utils/sfuRuntime.ts';
 
@@ -71,6 +72,24 @@ describe('SFU session participant identity', () => {
       remoteParticipants: [participant('a'), participant('b'), participant('c'), participant('d')],
       mediaServerReady: true,
     }), null);
+  });
+});
+
+describe('screen share routing', () => {
+  const onStage = [participant('a'), participant('b'), participant('c'), participant('d')];
+
+  it('keeps the separate camera, screen and screen audio route when the mesh is the only transport', () => {
+    assert.equal(shouldUseSeparateScreenShare(false, onStage, () => false), true);
+  });
+
+  it('keeps the sources separate on an SFU stage with connected mesh paths', () => {
+    const connected = new Set(onStage.map(person => person.id));
+    const participants = [...onStage, participant('backstage', 'backstage'), participant('waiting', 'green-room')];
+    assert.equal(shouldUseSeparateScreenShare(true, participants, id => connected.has(id)), true);
+  });
+
+  it('keeps the composed SFU fallback for a stage peer without a connected mesh path', () => {
+    assert.equal(shouldUseSeparateScreenShare(true, onStage, id => id !== 'b'), false);
   });
 });
 

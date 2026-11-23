@@ -11,3 +11,13 @@
 .recording-folder-save-result audio { display: block; width: 100%; max-width: 100%; margin-top: 8px; }
 .recording-folder-save--compact { flex: 1 0 100%; margin-top: 8px; padding: 9px; }
 .recording-folder-save--compact > .recording-folder-save-button { min-height: 30px; padding: 6px 9px; font-size: 11px; }
+
+.recording-take-checklist { margin-top: 12px; font-size: 12px; }
+.recording-take-checklist summary { cursor: pointer; }
+.recording-take-checklist label { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.recording-take-checklist select { min-width: 0; max-width: 100%; padding: 4px; color: var(--text-primary); background: var(--bg-secondary); border: 1px solid var(--border-strong); border-radius: 4px; }
+.recording-take-checklist ul { margin: 8px 0; padding: 0; list-style: none; }
+.recording-take-checklist li { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; overflow-wrap: anywhere; }
+.recording-take-checklist li [data-state="missing"] { color: var(--danger, #f87171); }
+.recording-take-checklist li [data-state="verified"] { color: var(--success, #4ade80); }
+.recording-take-checklist button { margin: 4px 4px 0 0; }
