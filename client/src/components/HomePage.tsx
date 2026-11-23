@@ -1481,6 +1481,7 @@ export function HomePage() {
     (studioFilter === 'all' || getScheduleState(room) === 'Upcoming')
   );
   const viewTitles = { studios: 'Studios', recordings: 'Recordings', brand: 'Brand kits', team: 'Team', settings: 'Settings' };
+  const rootView = workspaceView === 'brand' || workspaceView === 'team' ? 'settings' : workspaceView;
 
   return (
     <div className="workspace-app">
@@ -1489,7 +1490,9 @@ export function HomePage() {
         <a className="workspace-logo" href="/" aria-label="Live Stream Studio home"><span className="brand-symbol"><StudioIcon name="video" /></span><span>Live Stream<span>Studio</span></span></a>
         <nav aria-label="Workspace">
           {(['studios', 'recordings', 'settings'] as const).map(view => (
-            <button key={view} aria-current={workspaceView === view ? 'page' : undefined} onClick={() => setWorkspaceView(view)}>
+            <button key={view}
+              aria-current={rootView === view ? (workspaceView === view ? 'page' : 'location') : undefined}
+              onClick={() => setWorkspaceView(view)}>
               <StudioIcon name={view} />{viewTitles[view]}
             </button>
           ))}

@@ -138,7 +138,7 @@ export function ControlBar({
   addTool('Settings', 'Camera and microphone', onOpenDeviceSettings, 'audio video devices speakers');
   if (onToggleScreenShare && onScreenShareOptimizeForChange) {
     const nextMode = screenShareOptimizeFor === 'text' ? 'motion' : 'text';
-    addTool('Settings', nextMode === 'motion' ? 'Share smoother motion' : 'Share sharper text',
+    addTool('Settings', nextMode === 'motion' ? 'Prefer smooth screen motion' : 'Prefer sharp screen text',
       () => onScreenShareOptimizeForChange(nextMode), 'screen share quality optimize');
   }
   if (!talkbackActive) addTool('Settings', 'Talk backstage', onToggleTalkback, 'talkback off air microphone');
@@ -193,7 +193,7 @@ export function ControlBar({
       </div>
       <div className="studio-control-session">
         {talkbackActive && onToggleTalkback && (
-          <button type="button" className="studio-control" onClick={onToggleTalkback}
+          <button type="button" className="studio-control studio-control-talkback" onClick={onToggleTalkback}
             aria-label="Stop talking backstage and go back on air" title={withShortcutHint('Stop talking backstage', 'toggle-talkback')}>
             Stop talkback
           </button>
@@ -215,7 +215,9 @@ export function ControlBar({
             <span>{isLive || isTestStream ? 'Destinations' : 'Go live'}</span>
           </button>
         )}
-        <div className="studio-control-more" ref={moreRef}>
+        <div className="studio-control-more" ref={moreRef} onBlur={event => {
+          if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setShowMore(false);
+        }}>
           <button type="button" className="studio-control" ref={moreButtonRef} onClick={() => setShowMore(open => !open)}
             aria-label="More tools"
             aria-description={isHost && unreadChatCount > 0 ? `${unreadChatCount} unread chat messages` : undefined}

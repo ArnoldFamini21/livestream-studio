@@ -28,6 +28,7 @@ body:not([data-studio-theme='light']):not([data-studio-theme='colorful']) {
 .studio-control:hover:not(:disabled) { background: var(--bg-elevated); }
 .studio-control svg { width: 16px; height: 16px; flex-shrink: 0; }
 .studio-control[data-active="false"] { color: var(--warning-text, #fbbf24); }
+.studio-control-talkback { color: var(--warning-text, #fbbf24); border-color: currentColor; }
 .studio-control[data-selected="true"], .studio-control[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-subtle); }
 .studio-control-record svg, .studio-control-leave { color: var(--danger-text, #fca5a5); }
 .studio-control-record[data-recording="true"] { color: var(--danger-text, #fca5a5); border-color: currentColor; }
@@ -70,7 +71,8 @@ body:not([data-studio-theme='light']):not([data-studio-theme='colorful']) {
  .studio-stage { padding: 12px 10px !important; }.studio-layoutBar { gap: 4px !important; padding: 5px !important; max-width: 100%; flex-wrap: wrap; justify-content: center; }
  .studio-control-bar { justify-content: center; padding: 8px 10px; }
  .studio-control { min-height: 44px; padding-inline: 8px; font-size: 12px; }
- .studio-tool-menu { position: fixed; bottom: 120px; right: auto; left: 50%; transform: translateX(-50%); width: min(330px, calc(100vw - 24px)); max-height: calc(100dvh - 140px); }
+ .studio-control-more { position: static; }
+ .studio-tool-menu { bottom: calc(100% + 6px); right: auto; left: 50%; transform: translateX(-50%); width: min(330px, calc(100vw - 24px)); max-height: calc(100dvh - var(--studio-control-bar-h) - 16px); }
  .join-card { padding: 24px !important; }
 }
 @media (prefers-reduced-motion: reduce) { .studio-container *, .workspace-app * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
@@ -130,7 +132,7 @@ body:not([data-studio-theme='light']):not([data-studio-theme='colorful']) {
  .studio-brand-more > summary:hover { background: var(--bg-tertiary); color: var(--text-primary); }
  .studio-brand-panel button:not(:disabled):hover { filter: brightness(1.08); }
 }
-/* Keep menus above the stage, and let mobile fixed menus anchor to the viewport. */
+/* Keep tool menus above the stage. */
 .studio-control-bar { position: relative; z-index: 60; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
 
 /* Recording countdown over the stage. */
