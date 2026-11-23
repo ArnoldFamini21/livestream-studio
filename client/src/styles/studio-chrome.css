@@ -75,6 +75,11 @@ body:not([data-studio-theme='light']):not([data-studio-theme='colorful']) {
  .studio-tool-menu { bottom: calc(100% + 6px); right: auto; left: 50%; transform: translateX(-50%); width: min(330px, calc(100vw - 24px)); max-height: calc(100dvh - var(--studio-control-bar-h) - 16px); }
  .join-card { padding: 24px !important; }
 }
+@media (max-width: 390px) {
+ .studio-control-devices { flex-wrap: nowrap; gap: 4px; }
+ .studio-control-devices .studio-control { position: relative; flex-direction: column; min-width: 64px; gap: 3px; padding: 4px; }
+ .studio-control-devices .studio-control-count { position: absolute; top: 3px; right: 3px; }
+}
 @media (prefers-reduced-motion: reduce) { .studio-container *, .workspace-app * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
 /* Toasts and floating notices sit above the control bar, which wraps to two rows on phones. */
 :root { --studio-control-bar-h: 96px; }
