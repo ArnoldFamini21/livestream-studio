@@ -248,6 +248,8 @@ try {
     pages.push(guest);
     await admitGuest(host, name);
     await stageGuest(host, name);
+    await guest.getByRole("region", { name: "Broadcast canvas", exact: true })
+      .getByRole("group", { name: `Video feed: ${name} (you)`, exact: true }).waitFor();
   }
   await host.getByRole("button", { name: "More tools", exact: true }).click();
   await host.getByRole("button", { name: "Recordings", exact: true }).click();

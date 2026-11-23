@@ -93,6 +93,7 @@ async function recoveryResponse(path: string, init: RequestInit, fetchImpl: type
   let message = 'Private recording storage is temporarily unavailable. Your local copy is still on this device.';
   if (response.status === 401 || response.status === 403 || response.status === 410) message = 'This private recovery link has expired or access was removed.';
   if (response.status === 409) message = 'The saved bytes no longer match this upload. Keep the original track on this device.';
+  if (response.status === 422) message = 'The uploaded bytes failed verification. Retry from this device.';
   if (response.status === 404) message = 'This private take is no longer available.';
   throw new PrivateRecoveryError(response.status, message);
 }

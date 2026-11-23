@@ -120,7 +120,8 @@ test('a secondary camera joins on a phone viewport and delivers a video-only ISO
     await host.getByRole('button', { name: 'More tools', exact: true }).click();
     await host.getByRole('button', { name: 'Recordings', exact: true }).click();
     await host.getByRole('button', { name: 'Choose recording folder', exact: true }).click();
-    await host.getByRole('region', { name: 'Recording destination', exact: true }).getByText('Recording straight to', { exact: false }).waitFor();
+    await host.getByRole('region', { name: 'Recording destination', exact: true })
+      .getByRole('status').filter({ hasText: 'camera-iso-check' }).waitFor();
     await host.getByRole('button', { name: 'Close recordings', exact: true }).click();
     await host.getByRole('button', { name: 'Start recording', exact: true }).click();
     await camera.getByText('Recording camera ISO', { exact: false }).waitFor();

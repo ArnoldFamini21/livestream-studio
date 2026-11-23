@@ -106,7 +106,7 @@ export function PrivateRecordingBackups({ references }: { references: PrivateRec
         <summary>{reference.roomName} · {new Date(reference.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} expiry</summary>
         {selected === key && (token
           ? <PrivateRecordingTake reference={reference} hostToken={token} />
-          : <div><p>Open the original host link to reclaim access to this take.</p></div>)}
+          : <p>This browser is missing the private host credential.</p>)}
       </details>;
     })}
   </div>;
