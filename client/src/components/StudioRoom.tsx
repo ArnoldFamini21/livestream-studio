@@ -63,6 +63,7 @@ import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.t
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
 import { useRecordingWorkflow } from '../hooks/useRecordingWorkflow.ts';
+import { listPrivateRecoveryGrants, privateRecoveryAvailable, rememberPrivateRecoveryGrant, rememberPrivateRecoveryTake } from '../utils/recordingCloudRecovery.ts';
 import { RecordingDestinationPanel, RecordingTransferBadge } from './RecordingDestinationPanel.tsx';
 import { planParticipantRecording, shouldPauseOwnUploadWhileLive, type ParticipantRecordingPlan } from '../utils/recordingWorkflowPolicy.ts';
 import { isPcmWavRecordingSupported } from '../utils/pcmWavRecorder.ts';
@@ -1702,6 +1703,25 @@ export function StudioRoom() {
   const isHostOrCoHost = isStudioOperator(myParticipant);
   const canUseOperatorControls = canUseAdmittedOperatorControls(myParticipant);
   const canControlRecording = canControlStudioRecording(myParticipant);
+  const [privateRecoveryReady, setPrivateRecoveryReady] = useState(false);
+  const [privateRecoverySelected, setPrivateRecoverySelected] = useState(false);
+  const [guestRecoveryAvailable, setGuestRecoveryAvailable] = useState(false);
+  const recoveryRoomName = useRef('Studio');
+  recoveryRoomName.current = room?.name || 'Studio';
+  useEffect(() => {
+    setGuestRecoveryAvailable(listPrivateRecoveryGrants().some(grant => grant.roomId === roomId));
+  }, [roomId]);
+  const maySetPrivateRecovery = myParticipant?.role === 'host' && Boolean(roomHostToken);
+  useEffect(() => {
+    setPrivateRecoveryReady(false);
+    setPrivateRecoverySelected(false);
+    if (!maySetPrivateRecovery) return;
+    const request = new AbortController();
+    void privateRecoveryAvailable(request.signal).then(ready => {
+      if (!request.signal.aborted) setPrivateRecoveryReady(ready);
+    }).catch(() => undefined);
+    return () => request.abort();
+  }, [maySetPrivateRecovery, roomId]);
   const captionsAllowed = canUseOperatorControls;
   const sessionPeerConnectionParticipants = useMemo<SessionPeerHealthParticipant[]>(() => (
     Array.from(participants.entries()).map(([id, participant]) => ({
@@ -3241,6 +3261,25 @@ export function StudioRoom() {
           setSessionRecordingPaused(Boolean(message.payload.recording && message.payload.paused));
           setRoom((prev) => prev ? { ...prev, status: getRoomActivityStatus(isLiveRef.current, sessionRecordingStartedAtRef.current) } : prev);
           break;
+        case 'recording-recovery-grant': {
+          const grant = message.payload;
+          if (grant.roomId !== roomId || grant.participantId !== myParticipantRef.current?.id) break;
+          const known = listPrivateRecoveryGrants().some(item => item.roomId === grant.roomId && item.takeId === grant.takeId && item.participantId === grant.participantId);
+          if (rememberPrivateRecoveryGrant(grant)) {
+            setGuestRecoveryAvailable(true);
+            if (!known) addToastRef.current('Private backup is available. Use Finish upload after recording.', 'info');
+          } else addToastRef.current('This browser could not save upload access. Your local recording can still be saved.', 'warning');
+          break;
+        }
+        case 'recording-recovery-state': {
+          if (!roomId) break;
+          const { takeId, status, expiresAt } = message.payload;
+          if (status === 'ready' && expiresAt) {
+            const saved = rememberPrivateRecoveryTake({ roomId, takeId, expiresAt, roomName: recoveryRoomName.current });
+            if (!saved) addToastRef.current('This browser could not save the private backup in Recordings.', 'warning');
+          } else if (status === 'unavailable') addToastRef.current('Private backup is unavailable. Local recording continues.', 'warning');
+          break;
+        }
         case 'live-stream-state-changed': {
           const previousLiveStartedAt = liveStartedAtRef.current;
           isLiveRef.current = message.payload.live;
@@ -3329,7 +3368,8 @@ export function StudioRoom() {
           cleanupRef.current();
           stopMediaRef.current();
           stopPublishedScreenShareRef.current();
-          navigateRef.current('/');
+          navigateRef.current(myParticipantRef.current?.role === 'guest' && listPrivateRecoveryGrants().some(grant => grant.roomId === roomId)
+            ? '/finish-upload' : '/');
           break;
         case 'error':
           if (['VIEWER_NOT_FOUND', 'VIEWER_MESSAGE_NOT_FOUND', 'VIEWER_BLOCK_NOT_FOUND', 'VIEWER_MODERATION_RATE_LIMITED'].includes(message.payload.code)) {
@@ -3517,6 +3557,7 @@ export function StudioRoom() {
         case 'poll-update':
         case 'live-stream-token-request':
         case 'recording-upload-token-request':
+        case 'recording-recovery-grant-request':
         case 'sfu-token-request':
         case 'external-chat-connect':
         case 'external-chat-disconnect':
@@ -3532,7 +3573,7 @@ export function StudioRoom() {
           assertNever(message);
       }
     },
-    [seatKey, showLiveSessionSummary]
+    [roomId, seatKey, showLiveSessionSummary]
   );
 
   useEffect(() => {
@@ -4098,6 +4139,8 @@ export function StudioRoom() {
           return;
         }
         const startedAt = new Date().toISOString();
+        const privateRecovery = maySetPrivateRecovery && privateRecoveryReady && privateRecoverySelected;
+        if (privateRecovery) setPrivateRecoverySelected(false);
         const localCaptureCount = myParticipant.status === 'on-stage' && (myParticipant.audioEnabled || myParticipant.videoEnabled) ? 1 : 0;
         const remoteCaptureCount = Array.from(participants.values()).filter((participant) => (
           participant.status === 'on-stage' && (participant.audioEnabled || participant.videoEnabled)
@@ -4113,6 +4156,7 @@ export function StudioRoom() {
             sessionId: recordingSessionId,
             paused: false,
             startedAt,
+            ...(privateRecovery ? { privateRecovery: true } : {}),
             performedBy: myParticipant.id,
           },
         });
@@ -4619,6 +4663,13 @@ export function StudioRoom() {
       void setVideoForwardingEnabled(true);
     };
   }, [audioProcessing.musicMode, requestSfuToken, setAudioForwardingEnabled, setVideoForwardingEnabled, sfuReconnectNonce, sfuSessionParticipantId]);
+
+  const recoveryGuestId = myParticipant?.role === 'guest' && myParticipant.status === 'on-stage' ? myParticipant.id : '';
+  useEffect(() => {
+    if (!connected || !roomId || !recoveryGuestId || !sessionRecordingSessionId || !sessionRecordingStartedAt) return;
+    if (listPrivateRecoveryGrants().some(grant => grant.roomId === roomId && grant.takeId === sessionRecordingSessionId && grant.participantId === recoveryGuestId)) return;
+    send({ type: 'recording-recovery-grant-request', payload: { takeId: sessionRecordingSessionId } });
+  }, [connected, recoveryGuestId, roomId, send, sessionRecordingSessionId, sessionRecordingStartedAt]);
 
   useEffect(() => {
     if (
@@ -8725,6 +8776,7 @@ export function StudioRoom() {
                   persisted={recordingWorkflow.destination.persistence?.persisted ?? null}
                   preferences={recordingWorkflow.destination.preferences}
                   cloudAvailable={recordingWorkflow.cloudAvailable}
+                  privateRecovery={privateRecoveryReady && maySetPrivateRecovery ? { selected: privateRecoverySelected, setSelected: setPrivateRecoverySelected } : undefined}
                   transfers={recordingWorkflow.transfers}
                   checklists={recordingWorkflow.takeChecklists}
                   checklistError={recordingWorkflow.destination.takeHistoryError}

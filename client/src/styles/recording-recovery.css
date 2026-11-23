@@ -9,3 +9,13 @@
 .recording-recovery button { background: var(--accent-subtle); color: var(--accent); border: 1px solid var(--border-strong); border-radius: 7px; padding: 9px 12px; font-size: 12px; }
 .recording-recovery [role='alert'] { color: var(--danger); }
 .workspace-app .recording-recovery { --text-primary: #292832; --text-secondary: #737180; --accent: #6851b7; --accent-subtle: #f0ecf8; --border-strong: #e5e2ec; }
+.recording-recovery summary { cursor: pointer; padding-block: 8px; }
+.recording-recovery summary + div { padding-inline-start: 14px; }
+.finish-recording-upload { max-width: 600px; margin: 0 auto; padding: 48px 20px; }
+.finish-recording-upload h1 { margin: 20px 0; font-size: clamp(28px, 5vw, 38px); }
+.finish-recording-upload h2 { font-size: 18px; margin: 0 0 8px; overflow-wrap: anywhere; }
+.finish-recording-upload ul { padding: 0; list-style: none; }
+.finish-recording-upload li { border-top: 1px solid var(--border-strong); padding: 20px 0; }
+.finish-recording-upload p { color: var(--text-secondary); line-height: 1.5; }
+.finish-recording-upload progress { display: block; width: 100%; accent-color: var(--accent); }
+.finish-recording-upload [role='alert'] { color: var(--danger); }
