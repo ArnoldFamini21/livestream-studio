@@ -93,6 +93,10 @@ short duration to exercise native H.264/AAC support, requiring chunks from
 each video recorder before Stop with the same packet checks. Full qualification
 rejects both overrides.
 
+Build and run with `VITE_RECORDING_ENCODER=browser-drain` to measure a bounded
+pause before native Chromium video recorders stop. The original packet and
+checksum limits apply. In CI, select `browser-drain` in `recording_encoder`.
+
 The existing CI workflow also has an optional `recording_soak` manual input.
 It runs a 35-second preflight followed by two consecutive 1,200-second takes
 on the same Linux runner. All use real browser capture, native OPFS folder

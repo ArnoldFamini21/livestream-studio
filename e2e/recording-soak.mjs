@@ -28,14 +28,17 @@ const useH264Fallback = process.env.SOAK_COMPARE_H264 === "1";
 assert.ok(!useVp8Fallback || !useH264Fallback, "Select only one encoder comparison");
 assert.ok(!qualification || (!useVp8Fallback && !useH264Fallback), "Qualification must use the product's own encoder selection");
 const h264MimeType = useH264Fallback ? "video/mp4;codecs=avc1,mp4a.40.2" : null;
+const expectNativeDrain = process.env.VITE_RECORDING_ENCODER === "browser-drain";
 const expectWebCodecsH264 = process.env.VITE_RECORDING_ENCODER === "webcodecs-h264";
 const expectOwnedCameraFrames = process.env.VITE_RECORDING_ENCODER === "webcodecs-owned";
 const expectWebCodecs = expectWebCodecsH264 || expectOwnedCameraFrames || process.env.SOAK_EXPECT_WEBCODECS === "1" || process.env.VITE_RECORDING_ENCODER === "webcodecs";
 assert.ok(!expectWebCodecs || (!useVp8Fallback && !useH264Fallback), "Encoder comparisons require native MediaRecorder");
-assert.ok(!browserLocal || (!expectWebCodecs && !useVp8Fallback && !useH264Fallback), "Browser-local diagnostics require the default native recorder");
+assert.ok(!expectNativeDrain || (!useVp8Fallback && !useH264Fallback), "Native drain comparison requires the product codec selection");
+assert.ok(!browserLocal || (!expectNativeDrain && !expectWebCodecs && !useVp8Fallback && !useH264Fallback), "Browser-local diagnostics require the default native recorder");
 const encoderProfile = expectWebCodecsH264 ? "studio-webcodecs-h264"
   : expectOwnedCameraFrames ? "studio-webcodecs-owned"
   : expectWebCodecs ? "studio-webcodecs"
+  : expectNativeDrain ? "browser-drain"
   : useVp8Fallback ? "vp8-fallback"
   : h264MimeType ? "h264-aac-fallback" : "studio-default";
 const result = { qualification, captureDestination: browserLocal ? "browser-local" : "host-folder", requestedSeconds, cameraPreset: "720p", encoderProfile, startedAt: new Date().toISOString(), passed: false, reconnect: null, tracks: [], errors: [] };
@@ -74,6 +77,7 @@ function installObserver({ folder, useVp8Fallback, h264MimeType }) {
       started: null,
       firstChunkDispatchedAt: null,
       lastChunkDispatchedAt: null,
+      pauseRequested: null,
       stopRequested: null,
       stopped: null,
       chunks: 0,
@@ -124,6 +128,11 @@ function installObserver({ folder, useVp8Fallback, h264MimeType }) {
         row.programPaintAgeAtStartMs = typeof lastPaint === "number" ? row.startRequested - lastPaint : null;
       }
       return start.apply(this, args);
+    };
+    const pause = recorder.pause;
+    recorder.pause = function (...args) {
+      row.pauseRequested = performance.now();
+      return pause.apply(this, args);
     };
     const stop = recorder.stop;
     recorder.stop = function (...args) {
@@ -459,6 +468,16 @@ try {
     resources: window.__captureResources,
   }), seatNames[index])));
   result.diagnostics = diagnostics;
+  if (expectNativeDrain) {
+    const completed = diagnostics.flatMap(seat => seat.recorders.filter(row => row.stopped !== null));
+    const video = completed.filter(row => row.kinds.includes("video"));
+    assert.equal(video.length, 4, "All four video sources use the native drain comparison");
+    assert.ok(video.every(row => row.pipeline === "media-recorder" && /\bvp9\b/i.test(row.mimeType)
+      && row.pauseRequested !== null && row.pauseRequested < row.stopRequested),
+      "Each native VP9 video source pauses intake before its recorder stops");
+    assert.ok(completed.filter(row => !row.kinds.includes("video")).every(row => row.pauseRequested === null),
+      "Audio-only sources still stop immediately");
+  }
   if (browserLocal) {
     assert.equal(sourceCaptures.length, 7, "browser-local diagnostics require the same seven recording sources");
     assert.ok(sourceCaptures.every(source => source.pipeline === "media-recorder"), "all recorders use the native pipeline");

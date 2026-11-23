@@ -16,6 +16,7 @@ on:
         default: browser
         options:
           - browser
+          - browser-drain
           - webcodecs
           - webcodecs-owned
           - webcodecs-h264

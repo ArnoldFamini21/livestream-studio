@@ -43,7 +43,7 @@ import {
   type ProgressiveUploadTrackCompletion,
 } from '../utils/progressiveRecordingUpload.ts';
 import { reportClientError } from '../utils/clientErrorReporter.ts';
-import { preparePrimaryRecordingRecorder, type PrimaryRecordingRecorder } from '../utils/primaryRecordingRecorder.ts';
+import { preparePrimaryRecordingRecorder, stopPrimaryRecording, type PrimaryRecordingRecorder } from '../utils/primaryRecordingRecorder.ts';
 
 /** Audio rate beside a camera or screen track in a local recording. */
 const LOCAL_RECORDING_AUDIO_BITS_PER_SECOND = 256_000;
@@ -822,17 +822,32 @@ export function useLocalRecording(roomName = 'Studio') {
     }));
   }, [getElapsedSeconds, isPaused, isRecording]);
 
-  const stopSingleRecorder = async (trackRecorder: TrackRecorder): Promise<StoppedTrackRecorderResult> => {
+  const stopSingleRecorder = async (
+    trackRecorder: TrackRecorder,
+    allowBrowserDrain = false,
+  ): Promise<StoppedTrackRecorderResult> => {
     const { recorder, chunkStore, cleanup } = trackRecorder;
     try {
       let stopFailed = false;
-      if (recorder.state !== 'inactive') {
-        try { recorder.stop(); } catch { stopFailed = true; }
+      let drainRequestedAt: number | undefined;
+      try {
+        const requestedAt = timelineNow();
+        const isMixedVideo = trackRecorder.kind === 'iso' || trackRecorder.kind === 'program';
+        const drain = stopPrimaryRecording(
+          recorder,
+          allowBrowserDrain && isMixedVideo && !trackRecorder.webCodecsSidecar?.started,
+        );
+        if (drain) {
+          drainRequestedAt = requestedAt;
+          await drain;
+        }
+      } catch {
+        stopFailed = true;
       }
-      const stopTimelineAt = timelineNow();
+      const stopTimelineAt = drainRequestedAt ?? timelineNow();
       // Wait for MediaRecorder's final data event, including spontaneous stops.
       const blob = await (stopFailed ? chunkStore.finish(recorder.mimeType) : trackRecorder.finished);
-      const stoppedAt = new Date().toISOString();
+      const stoppedAt = new Date(drainRequestedAt ?? Date.now()).toISOString();
       const timeline = trackRecorder.capture.timeline;
       trackRecorder.capture = finalizeRecordingCaptureMetadata(
         timeline ? { ...trackRecorder.capture, timeline: stopCaptureTimeline(timeline, stopTimelineAt) } : trackRecorder.capture,
@@ -865,7 +880,7 @@ export function useLocalRecording(roomName = 'Studio') {
     progressiveUploadRef.current = null;
     // Halt background cycles; finish() still uploads the remainder when the caller asks.
     activeUpload?.uploader.stop();
-    const stopPromises = liveRecorders.map((trackRecorder) => stopSingleRecorder(trackRecorder));
+    const stopPromises = liveRecorders.map((trackRecorder) => stopSingleRecorder(trackRecorder, true));
 
     stopPromiseRef.current = Promise.all(stopPromises).then(
       (liveResults) => {

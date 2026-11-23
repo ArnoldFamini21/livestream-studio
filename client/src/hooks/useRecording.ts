@@ -19,7 +19,7 @@ import {
 } from '../utils/progressiveRecordingUpload.ts';
 import type { LocalProgressiveUploadConfig } from './useLocalRecording.ts';
 import { timelineNow } from '../utils/recordingTakeManifest.ts';
-import type { PrimaryRecordingRecorder } from '../utils/primaryRecordingRecorder.ts';
+import { stopPrimaryRecording, type PrimaryRecordingRecorder } from '../utils/primaryRecordingRecorder.ts';
 
 export const PROGRAM_VIDEO_BITS_PER_SECOND = 20_000_000;
 export const PROGRAM_AUDIO_BITS_PER_SECOND = 256_000;
@@ -295,9 +295,11 @@ export function useRecording(roomName = 'Studio') {
     stopPromiseRef.current = (async () => {
       try {
         const results = await Promise.all(tracks.map(async ([id, track]) => {
-          if (track.recorder.state !== 'inactive') {
-            try { track.recorder.stop(); }
-            catch { return [id, { name: track.name, kind: track.kind, durationSeconds, blob: await track.chunkStore.finish(track.recorder.mimeType) }] as const; }
+          try {
+            const drain = stopPrimaryRecording(track.recorder, track.kind === 'program');
+            if (drain) await drain;
+          } catch {
+            return [id, { name: track.name, kind: track.kind, durationSeconds, blob: await track.chunkStore.finish(track.recorder.mimeType) }] as const;
           }
           const blob = await track.finished;
           return [id, { name: track.name, kind: track.kind, durationSeconds, blob }] as const;
