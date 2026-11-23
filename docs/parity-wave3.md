@@ -642,6 +642,22 @@ program. Both broadcast orientations use the same opening or closing.
 During automation the program excludes stage microphone and screen inputs.
 The media bus still carries the clip and other studio media.
 
+## Physical recording sync check
+
+Record a dark target with a bright center and a 1 kHz tone source in front of
+two real cameras and microphones. Use a single trigger to light the target and
+play the tone for about 150 to 250 ms. Capture at least three cues spread across
+the take with no similar flashes or tones between them. Keep the target centered
+and large enough to cover the middle third of each picture. Set the audio level
+so the cue is clear without clipping. Leave a second of silence at either end.
+
+Run `node e2e/recording-cues.mjs FILE EXPECTED_CUES` on each camera recording
+and on the program when the target fills its center. Pass a custom luma
+threshold as a third argument if the dark and bright levels require it. The
+report contains signed picture-to-sound offset for each trigger and the change
+between triggers. Both the largest absolute offset and the change must be under
+40 ms. This check complements the packet continuity and byte integrity tests.
+
 ## On-air QR codes
 
 Choose **Overlays → Add overlay → QR code**. Enter a destination URL, save

@@ -261,14 +261,14 @@ try {
   result.captureElapsedSeconds = (Date.now() - captureStarted) / 1000;
   console.log(JSON.stringify({ event: "stopping-recording", elapsedSeconds: result.captureElapsedSeconds }));
   await saveResult();
-  const stopRecording = host.getByRole("button", { name: "Stop recording", exact: true });
-  await stopRecording.waitFor();
-  // Use the normal Stop handler without waiting for another frame to stabilize
-  // a pointer target on a host running several software encoders.
-  await stopRecording.evaluate(button => {
-    if (button.disabled) throw new Error("Stop recording control is disabled");
+  // Poll on the same timer as recorder readiness. On a saturated host, a
+  // visibility wait can stall even while the toolbar and capture stay active.
+  await host.waitForFunction(() => {
+    const button = document.querySelector('button[aria-label="Stop recording"]');
+    if (!(button instanceof HTMLButtonElement) || button.disabled || !button.getClientRects().length) return false;
     button.click();
-  }, undefined, { timeout: 30_000 });
+    return true;
+  }, undefined, { timeout: 60_000, polling: 500 });
   clearInterval(progressTimer);
   console.log(JSON.stringify({ event: "waiting-for-source-checksums" }));
   await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.every(row => row.started === null || (row.stopped !== null && row.flushed)), undefined, { timeout: 120_000, polling: 500 })));

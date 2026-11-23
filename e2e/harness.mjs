@@ -130,7 +130,8 @@ export async function createStudio(context, { url = 'http://localhost:5199', nam
   const response = await created;
   assert.equal(response.status(), 201);
   const room = await response.json();
-  await page.getByRole('button', { name: 'Enter studio', exact: true }).click();
+  const studioCard = page.locator('.ws-savedRoomCard').filter({ has: page.getByText(name, { exact: true }) });
+  await studioCard.getByRole('button', { name: 'Enter studio', exact: true }).click();
   await page.getByRole('button', { name: 'Start recording', exact: true }).waitFor();
   return { page, studioId: room.id, room };
 }
