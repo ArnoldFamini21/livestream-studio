@@ -6,7 +6,7 @@ type MediaAudioBus = Pick<BroadcastAudioBus, 'getContext' | 'connectNode'>;
 // including after a route has been disconnected and attached again.
 const mediaSources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
 
-export function connectMediaElementAudio(element: HTMLMediaElement, bus: MediaAudioBus): {
+export function connectMediaElementAudio(element: HTMLMediaElement, bus: MediaAudioBus, { duck = true } = {}): {
   resume: () => Promise<void>;
   disconnect: () => void;
 } {
@@ -22,7 +22,7 @@ export function connectMediaElementAudio(element: HTMLMediaElement, bus: MediaAu
 
   // Creating the source replaces the element's direct speaker output. Route
   // that single source to both monitoring and the broadcast/recording mix.
-  const disconnectRoute = bus.connectNode(source, { stream: true, monitor: true, duck: true });
+  const disconnectRoute = bus.connectNode(source, { stream: true, monitor: true, duck });
   let disconnected = false;
   return {
     resume: async () => {

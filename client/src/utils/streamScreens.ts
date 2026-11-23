@@ -15,6 +15,7 @@ export interface StreamScreenDraft {
   countdownSeconds?: number;
   automatic?: boolean;
   holdSeconds?: number;
+  videoAssetId?: string;
 }
 
 export interface StreamScreenConfig {
@@ -93,6 +94,9 @@ export function normalizeStreamScreenDraft(kind: StreamScreenKind, value: unknow
     backgroundMode: value.backgroundMode === 'stage' ? 'stage' : 'brand',
     showLogo: typeof value.showLogo === 'boolean' ? value.showLogo : fallback.showLogo,
     ...(value.automatic === true ? { automatic: true } : {}),
+    ...(typeof value.videoAssetId === 'string' && /^[a-zA-Z0-9_-]{1,120}$/.test(value.videoAssetId)
+      ? { videoAssetId: value.videoAssetId }
+      : {}),
     ...(kind === 'ending' && typeof value.holdSeconds === 'number' && Number.isFinite(value.holdSeconds)
       ? { holdSeconds: Math.max(MIN_CLOSING_SCREEN_SECONDS, Math.min(MAX_CLOSING_SCREEN_SECONDS, Math.round(value.holdSeconds))) }
       : {}),

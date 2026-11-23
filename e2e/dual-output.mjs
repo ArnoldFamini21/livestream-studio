@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, stat } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
 import ffmpegStatic from 'ffmpeg-static';
 import { admitGuest, createStudio, eventually, joinStudio, repoRoot, stageGuest, startHarness } from './harness.mjs';
 
@@ -12,6 +13,8 @@ import { admitGuest, createStudio, eventually, joinStudio, repoRoot, stageGuest,
 const mediaPort = Number(process.env.E2E_DUAL_MEDIA_PORT || 3382);
 const artifactDir = path.resolve(process.env.E2E_ARTIFACT_DIR || 'output/dual-output');
 const ffmpeg = process.env.FFMPEG_PATH || ffmpegStatic;
+const run = promisify(execFile);
+const withClips = process.env.E2E_AUTOMATED_CLIPS === '1';
 const secret = 'local-dual-output-e2e-token-secret-not-production';
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PATH|TMPDIR|TMP|TEMP|XDG_.*|SYSTEMROOT)$/.test(key)));
 
@@ -100,6 +103,15 @@ test('two independent program layouts send H.264 and AAC to matching RTMP destin
     await admitGuest(host, 'Test Guest');
     await stageGuest(host, 'Test Guest');
 
+    if (withClips) {
+      const clip = path.join(artifactDir, 'Show bumper.mp4');
+      await run(ffmpeg, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=red:s=320x180:r=25',
+        '-f', 'lavfi', '-i', 'sine=frequency=1100:sample_rate=48000',
+        '-t', '4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', clip], { timeout: 15_000 });
+      await host.getByRole('navigation', { name: 'Studio panels' }).getByRole('button', { name: 'Media', exact: true }).click();
+      await host.getByLabel('Upload media files', { exact: true }).setInputFiles(clip);
+      await eventually(() => host.getByRole('button', { name: 'Show Show bumper.mp4', exact: true }).isEnabled());
+    }
     await host.getByRole('button', { name: 'Go live: open stream destinations' }).click();
     const dual = host.getByRole('checkbox', { name: 'Stream landscape and portrait together' });
     await dual.check();
@@ -128,6 +140,10 @@ test('two independent program layouts send H.264 and AAC to matching RTMP destin
     await host.getByLabel('Countdown', { exact: true }).fill('8');
     await host.getByLabel('Show before ending stream', { exact: true }).check();
     await host.getByLabel('Closing screen seconds', { exact: true }).fill('12');
+    if (withClips) {
+      await host.getByRole('combobox', { name: 'Opening clip', exact: true }).selectOption({ label: 'Show bumper.mp4' });
+      await host.getByRole('combobox', { name: 'Closing clip', exact: true }).selectOption({ label: 'Show bumper.mp4' });
+    }
     for (const [index, { rtmpUrl, streamKey }] of savedDestinations.entries()) {
       const output = outputs[index];
       children.push(startProcess(ffmpeg, ['-hide_banner', '-v', 'info', '-listen', '1', '-timeout', '90', '-i', rtmpUrl + '/' + streamKey,
@@ -161,16 +177,36 @@ test('two independent program layouts send H.264 and AAC to matching RTMP destin
       eventually(async () => (await stat(output)).size > 1000, { message: 'No capture for ' + output })));
     await host.getByRole('heading', { name: 'Starting Soon', exact: true }).waitFor({ state: 'detached' });
     const stop = host.getByRole('button', { name: 'Stop Streaming (2 destinations)' });
+    if (withClips) await host.waitForFunction(() => document.querySelector('video[data-broadcast-screen-video]') === null);
     await stop.click();
     await host.getByRole('heading', { name: 'Thanks for watching', exact: true }).waitFor();
     const endNow = host.getByRole('button', { name: 'End now', exact: true });
     await endNow.waitFor();
-    await endNow.click();
+    if (!withClips) await endNow.click();
     await host.getByRole('button', { name: 'Go Live to 2 Destinations' }).waitFor();
 
     const [landscape, portrait] = outputs;
     assert.match(await readEncoding(landscape), /Video: h264.*1280x720/);
     assert.match(await readEncoding(portrait), /Video: h264.*720x1280/);
+    if (withClips) {
+      for (const file of outputs) {
+        const [{ stdout: frames }, { stderr: audioMeasure }] = await Promise.all([
+          run(ffmpeg, ['-v', 'error', '-i', file, '-an', '-vf', 'fps=4,scale=16:16', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-'],
+            { encoding: 'buffer', timeout: 15_000 }),
+          run(ffmpeg, ['-hide_banner', '-i', file, '-vn', '-af', 'bandpass=f=1100:width_type=h:w=100,volumedetect',
+            '-f', 'null', '-'], { timeout: 15_000 }),
+        ]);
+        const redFrames = [];
+        for (let offset = 0; offset + 768 <= frames.length; offset += 768) {
+          // The clip is letterboxed in portrait, so sample the center pixel.
+          const center = offset + (8 * 16 + 8) * 3;
+          if (frames[center] > 150 && frames[center + 1] < 50) redFrames.push(offset / 768);
+        }
+        assert.ok(redFrames.length >= 8, 'the uploaded clip is visible in the received video');
+        const maxTone = Number(audioMeasure.match(/max_volume: (-?[\d.]+) dB/)?.[1]);
+        assert.ok(maxTone > -37, 'the uploaded clip tone reaches the receiver');
+      }
+    }
     assert.deepEqual(fixture.pageErrors, []);
     assert.deepEqual(fixture.cspViolations, []);
   } catch (error) {

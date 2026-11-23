@@ -1308,6 +1308,12 @@ export function useCompositor({
 
     // 1. Clear & stage background
     if (streamScreen) {
+      const clip = mediaSource.querySelector<HTMLVideoElement>('video[data-broadcast-screen-video]');
+      if (clip && clip.style.visibility !== 'hidden' && canDrawMediaVideo(clip, window.location.href) && clip.readyState >= 2) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        if (drawVideoElementFrame(ctx, clip, 0, 0, ctx.canvas.width, ctx.canvas.height, 'contain')) return;
+      }
       drawStageBackground(ctx, streamScreen.background, backgroundImageRef.current);
       drawStreamScreen(ctx, streamScreen, logoImageRef.current, Date.now());
       return;

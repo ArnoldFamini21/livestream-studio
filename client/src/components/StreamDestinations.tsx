@@ -72,6 +72,7 @@ interface StreamDestinationsProps {
   sessionHealth?: SessionHealthSummary;
   sceneCount?: number;
   streamScreenConfig: StreamScreenConfig;
+  streamScreenClips: { id: string; name: string }[];
   activeStreamScreenKind: StreamScreenKind | null;
   broadcastScreenPhase?: 'preparing' | 'opening' | 'closing';
   onStreamScreenConfigChange: (config: StreamScreenConfig) => void;
@@ -115,6 +116,7 @@ export function StreamDestinations({
   sessionHealth,
   sceneCount = 0,
   streamScreenConfig,
+  streamScreenClips,
   activeStreamScreenKind,
   broadcastScreenPhase,
   onStreamScreenConfigChange,
@@ -378,9 +380,21 @@ export function StreamDestinations({
           />
           {kind === 'starting' ? 'Show when going live' : 'Show before ending stream'}
         </label>
+        {screen.automatic && (streamScreenClips.length > 0 || screen.videoAssetId) && (
+          <label style={styles.screenCountdownLabel}>
+            <span>{kind === 'starting' ? 'Opening clip' : 'Closing clip'}</span>
+            <select style={styles.screenInput} value={screen.videoAssetId || ''} disabled={settingsLocked}
+              onChange={event => updateStreamScreen(kind, { videoAssetId: event.target.value || undefined })}>
+              <option value="">Branded screen</option>
+              {screen.videoAssetId && !streamScreenClips.some(clip => clip.id === screen.videoAssetId)
+                && <option value={screen.videoAssetId}>Unavailable clip</option>}
+              {streamScreenClips.map(clip => <option key={clip.id} value={clip.id}>{clip.name}</option>)}
+            </select>
+          </label>
+        )}
         {kind === 'ending' && screen.automatic && (
           <label style={styles.screenCountdownLabel}>
-            <span>Closing screen seconds</span>
+            <span>{screen.videoAssetId ? 'Maximum closing seconds' : 'Closing screen seconds'}</span>
             <input
               type="number"
               min={MIN_CLOSING_SCREEN_SECONDS}
@@ -394,7 +408,7 @@ export function StreamDestinations({
         )}
         {kind === 'starting' && (
           <label style={styles.screenCountdownLabel}>
-            <span>Countdown</span>
+            <span>{screen.automatic && screen.videoAssetId ? 'Maximum opening seconds' : 'Countdown'}</span>
             <input
               type="number"
               min={0}

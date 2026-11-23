@@ -626,6 +626,22 @@ speech recognition still depends on the studio operator's browser and guest
 consent. Chromium checks reuse a preset in a different room and play a timed
 caption over local HLS.
 
+## Automated opening and closing
+
+Open **Go Live → Stream screens**. Enable **Show when going live** to show
+the starting screen while the relay connects. The countdown begins once the
+relay is ready. **Skip opening** reveals the stage early. Enable **Show
+before ending stream** and choose the length of the closing screen. You can
+end immediately from the closing screen with **End now**.
+
+For automatic video bumpers, upload a clip in **Media**, then choose it as
+the opening or closing clip. Clip selections are saved in that browser's
+studio setup. The branded screen appears while the clip loads or if it
+cannot play. The duration setting limits how long the clip can hold the
+program. Both broadcast orientations use the same opening or closing.
+During automation the program excludes stage microphone and screen inputs.
+The media bus still carries the clip and other studio media.
+
 ## On-air QR codes
 
 Choose **Overlays → Add overlay → QR code**. Enter a destination URL, save

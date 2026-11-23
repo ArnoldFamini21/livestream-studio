@@ -345,9 +345,11 @@ import {
   DEFAULT_STREAM_SCREEN_CONFIG,
   buildActiveStreamScreen,
   getBroadcastScreenDuration,
+  type StreamScreenKind,
   normalizeStreamScreenConfig,
   type StreamScreenConfig,
 } from '../utils/streamScreens.ts';
+import { BroadcastScreenVideo } from './BroadcastScreenVideo.tsx';
 import { useBroadcastScreens } from '../hooks/useBroadcastScreens.ts';
 import { useToast } from './Toast.tsx';
 import { StudioMediaBanner } from './StudioMediaBanner.tsx';
@@ -1561,6 +1563,7 @@ export function StudioRoom() {
     prepareOpening,
     confirmOpening,
     playClosing,
+    clipEnded: onBroadcastClipEnded,
   } = useBroadcastScreens(programAudioMix.setStageMuted);
   // The program audio for backstage guests' program return: the on-stage
   // guests and their screens. Our own mic, screen sound and the media bus are
@@ -1896,6 +1899,11 @@ export function StudioRoom() {
     );
     return activeStreamScreenState.automation === 'waiting' ? { ...screen, countdownSeconds: undefined } : screen;
   }, [activeStreamScreenState, brandColor, canvasBackground, programLogoUrl, streamScreenConfig]);
+  const streamScreenClips = useMemo(() => mediaAssets.filter(asset =>
+    asset.type === 'video' && asset.source === 'upload' && asset.url.startsWith('blob:') && canPlayMediaAsset(asset)), [mediaAssets]);
+  const getBroadcastClipUrl = (kind: StreamScreenKind) => (
+    streamScreenClips.find(clip => clip.id === streamScreenConfig[kind].videoAssetId)?.url
+  );
   const activeStreamScreenBackgroundStyle = useMemo(() => (
     activeStreamScreen ? getStageBackgroundStyle(activeStreamScreen.background) : {}
   ), [activeStreamScreen]);
@@ -5238,7 +5246,7 @@ export function StudioRoom() {
       }
 
       const openingSeconds = resume ? 0 : getBroadcastScreenDuration(streamScreenConfig, 'starting');
-      if (openingSeconds) prepareOpening();
+      if (openingSeconds) prepareOpening(getBroadcastClipUrl('starting'));
       setIsLive(true);
       setLiveStartedAt(null);
       setLiveSessionSummary(null);
@@ -5414,7 +5422,7 @@ export function StudioRoom() {
     const closingSeconds = getBroadcastScreenDuration(streamScreenConfig, 'ending');
     if (!isStartingLive && relayStats.status === 'live' && closingSeconds
       && !(broadcastScreenRef.current?.automation && broadcastScreenRef.current.kind === 'ending')) {
-      playClosing(closingSeconds, stopLiveNow);
+      playClosing(closingSeconds, stopLiveNow, getBroadcastClipUrl('ending'));
       return;
     }
     stopLiveNow();
@@ -8043,6 +8051,15 @@ export function StudioRoom() {
                     <p style={styles.streamScreenMessage}>{activeStreamScreen.message}</p>
                     <span style={{ ...styles.streamScreenAccent, background: activeStreamScreen.brandColor }} />
                   </div>
+                  {activeStreamScreenState?.automation === 'running' && activeStreamScreenState.clipUrl && (
+                    <BroadcastScreenVideo
+                      key={activeStreamScreenState.activatedAtMs}
+                      url={activeStreamScreenState.clipUrl}
+                      bus={broadcastAudioBus}
+                      onEnded={() => onBroadcastClipEnded(activeStreamScreenState)}
+                      onFailure={() => addToast('The broadcast clip could not play. Showing the branded screen.', 'error')}
+                    />
+                  )}
                 </div>
               )}
 
@@ -8292,6 +8309,7 @@ export function StudioRoom() {
               sessionHealth={sessionHealth}
               sceneCount={scenes.length}
               streamScreenConfig={streamScreenConfig}
+              streamScreenClips={streamScreenClips}
               activeStreamScreenKind={activeStreamScreenState?.kind || null}
               broadcastScreenPhase={activeStreamScreenState?.automation
                 ? activeStreamScreenState.kind === 'ending' ? 'closing' : activeStreamScreenState.automation === 'waiting' ? 'preparing' : 'opening'
