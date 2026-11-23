@@ -98,7 +98,7 @@ export default function FinishRecordingUpload() {
         {hasIncomplete && <p>Interrupted tracks are still available for local recovery.</p>}
       </li>;
     })}</ul>}
-    {(error || takes?.some(take => !take.recordings.length || take.recordings.some(track => !track.complete))) && !working && (
+    {(error || Boolean(takes?.length)) && !working && (
       <button type="button" className="workspace-secondary" onClick={() => { setError(''); setRefresh(value => value + 1); }}>Check this device again</button>
     )}
   </main>;

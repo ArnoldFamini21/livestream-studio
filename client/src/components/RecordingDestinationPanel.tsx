@@ -105,7 +105,7 @@ export function RecordingDestinationPanel(props: RecordingDestinationPanelProps)
       {props.privateRecovery && <label className="recording-private-backup-option">
         <input type="checkbox" checked={props.privateRecovery.selected} disabled={props.disabled}
           onChange={event => props.privateRecovery?.setSelected(event.target.checked)} />
-        <span>Private guest backup for next take<small>Guests can upload from their device for seven days.</small></span>
+        <span>Private guest backup for next take<small>On-stage guests can upload from their device for seven days.</small></span>
       </label>}
       {status === 'ready' && <RecordingTakeChecklists
         takes={props.checklists}

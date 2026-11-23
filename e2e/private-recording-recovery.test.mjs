@@ -75,6 +75,7 @@ test('a guest can reopen and verify saved tracks after the studio is gone', { ti
     await reopened.getByRole('button', { name: 'Check this device again' }).click();
     await reopened.getByText('1 track is ready to send to your host.').waitFor();
     await reopened.getByRole('button', { name: 'Finish upload', exact: true }).waitFor();
+    await reopened.getByRole('button', { name: 'Check this device again' }).waitFor();
     assert.deepEqual(fixture.pageErrors, []);
     assert.deepEqual(fixture.cspViolations, []);
   } finally {
