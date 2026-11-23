@@ -4,7 +4,7 @@ export function observeCaptureResources() {
     timeOrigin: performance.timeOrigin,
     longTasks: { count: 0, totalMs: 0, longest: [] },
     programCanvases: [],
-    writes: { count: 0, pending: 0, peakPending: 0, pendingBytes: 0, peakPendingBytes: 0, longestWriteMs: 0, longestCloseMs: 0 },
+    writes: { count: 0, pending: 0, peakPending: 0, pendingBytes: 0, peakPendingBytes: 0, longestWriteMs: 0, longestCloseMs: 0, longest: [] },
   };
   if (window.PerformanceObserver?.supportedEntryTypes.includes("longtask")) {
     new PerformanceObserver(list => {
@@ -81,7 +81,17 @@ export function observeCaptureResources() {
       function settle() {
         writes.pending--;
         writes.pendingBytes -= bytes;
-        writes[longestKey] = Math.max(writes[longestKey], performance.now() - before);
+        const endedMs = performance.now();
+        const durationMs = endedMs - before;
+        writes[longestKey] = Math.max(writes[longestKey], durationMs);
+        // Keep the slowest operations and their actual time windows for correlation
+        // with recorder start/stop and packet gaps, without saving every write.
+        const longest = writes.longest;
+        if (longest.length < 20 || durationMs > longest.at(-1).durationMs) {
+          longest.push({ operation, bytes, startedMs: before, endedMs, durationMs });
+          longest.sort((a, b) => b.durationMs - a.durationMs);
+          if (longest.length > 20) longest.pop();
+        }
       }
       void result.then(settle, settle);
       return result;

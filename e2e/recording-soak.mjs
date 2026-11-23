@@ -21,8 +21,12 @@ assert.ok(Number.isFinite(requestedSeconds) && requestedSeconds >= 15, "SOAK_SEC
 const artifactDir = path.resolve(process.env.SOAK_ARTIFACT_DIR || path.join(repoRoot, "output/recording-soak", new Date().toISOString().replaceAll(":", "-")));
 const qualification = requestedSeconds >= 1200;
 const useVp8Fallback = process.env.SOAK_COMPARE_VP8 === "1";
-assert.ok(!qualification || !useVp8Fallback, "Qualification must use the product's own encoder selection");
-const result = { qualification, requestedSeconds, cameraPreset: "720p", encoderProfile: useVp8Fallback ? "vp8-fallback" : "studio-default", startedAt: new Date().toISOString(), passed: false, reconnect: null, tracks: [], errors: [] };
+const useH264Fallback = process.env.SOAK_COMPARE_H264 === "1";
+assert.ok(!useVp8Fallback || !useH264Fallback, "Select only one encoder comparison");
+assert.ok(!qualification || (!useVp8Fallback && !useH264Fallback), "Qualification must use the product's own encoder selection");
+const h264MimeType = useH264Fallback ? "video/mp4;codecs=avc1,mp4a.40.2" : null;
+const encoderProfile = useVp8Fallback ? "vp8-fallback" : h264MimeType ? "h264-aac-fallback" : "studio-default";
+const result = { qualification, requestedSeconds, cameraPreset: "720p", encoderProfile, startedAt: new Date().toISOString(), passed: false, reconnect: null, tracks: [], errors: [] };
 await mkdir(path.join(artifactDir, "received"), { recursive: true });
 const seatNames = ["Soak Host", "Soak Guest A", "Soak Guest B"];
 const pages = [];
@@ -37,7 +41,7 @@ async function saveResult() {
 }
 
 // Passive observers: preserve original recorder calls, timing and handlers.
-function installObserver({ folder, useVp8Fallback }) {
+function installObserver({ folder, useVp8Fallback, h264MimeType }) {
   // Exercise the real user-selectable preset, matching the short CI suite.
   // The program remains the production 1920x1080 compositor output.
   try { sessionStorage.setItem("preferredVideoQuality", "720p"); } catch { /* storage unavailable */ }
@@ -46,6 +50,7 @@ function installObserver({ folder, useVp8Fallback }) {
   window.MediaRecorder = class extends nativeRecorder {
     static isTypeSupported(mimeType) {
       if (useVp8Fallback && /\bvp9\b/i.test(mimeType)) return false;
+      if (h264MimeType && mimeType.startsWith("video/") && mimeType !== h264MimeType) return false;
       return super.isTypeSupported(mimeType);
     }
     constructor(...args) {
@@ -175,7 +180,7 @@ async function instrument(context, name, folder = false) {
       (result.consoleWarnings ||= []).push({ participant: name, type: message.type(), message: message.text() });
     }
   }));
-  await context.addInitScript(installObserver, { folder, useVp8Fallback });
+  await context.addInitScript(installObserver, { folder, useVp8Fallback, h264MimeType });
   await context.addInitScript(observeCaptureResources);
 }
 
@@ -231,6 +236,11 @@ try {
   await instrument(hostContext, seatNames[0], true);
   const { page: host, studioId } = await createStudio(hostContext, { url: harness.url, name: "Three-seat recording soak", hostName: seatNames[0] });
   pages.push(host);
+  if (h264MimeType) {
+    const supported = await host.evaluate(mimeType => MediaRecorder.isTypeSupported(mimeType), h264MimeType);
+    result.nativeH264Supported = supported;
+    assert.ok(supported, "Chromium must natively support H.264 and AAC MediaRecorder");
+  }
   for (const name of seatNames.slice(1)) {
     const context = await harness.browser(name.replaceAll(" ", "-"));
     await instrument(context, name);
@@ -254,6 +264,20 @@ try {
   const captureStarted = Date.now();
   progressTimer = setInterval(() => console.log(JSON.stringify({ event: "recording-progress", elapsedSeconds: Math.round((Date.now() - captureStarted) / 1000), requestedSeconds })), 30_000);
   console.log(JSON.stringify({ event: "recording-started", qualification, requestedSeconds, artifactDir }));
+
+  if (h264MimeType) {
+    // Support alone is insufficient if the MP4 recorder buffers video until Stop.
+    await Promise.all(pages.map((page, index) => page.waitForFunction(expectedCount => {
+      const video = window.__soak.recorders.filter(row => row.kinds.includes("video") && row.started !== null);
+      return video.length === expectedCount && video.every(row => row.chunks >= 2 && row.stopped === null);
+    }, index === 0 ? 2 : 1, { timeout: 15_000, polling: 500 })));
+    result.liveVideoFragments = await Promise.all(pages.map((page, index) => page.evaluate(participant => ({
+      participant,
+      recorders: window.__soak.recorders.filter(row => row.kinds.includes("video") && row.started !== null)
+        .map(({ mimeType, chunks }) => ({ mimeType, chunks })),
+    }), seatNames[index])));
+    console.log(JSON.stringify({ event: "incremental-h264-video-confirmed", tracks: result.liveVideoFragments }));
+  }
 
   const reconnectGuest = pages[1];
   await reconnectGuest.waitForFunction(seconds => window.__soak.recorders.some(row => row.started !== null && row.stopped === null && performance.now() - row.started >= seconds * 1000), Math.min(30, requestedSeconds / 3), { timeout: 60_000, polling: 500 });
@@ -356,6 +380,10 @@ try {
       const expectedVideoSize = track.origin === "program" ? { width: 1920, height: 1080 }
         : track.kind === "iso" ? { width: 1280, height: 720 } : undefined;
       evidence.metrics = await probeRecording(file, { minimumSeconds: requestedSeconds, expectedVideoSize });
+      if (expectedVideoSize && h264MimeType) {
+        assert.equal(evidence.metrics.timelines.find(stream => stream.kind === "video")?.codec, "h264", "Encoded H.264 video");
+        assert.equal(evidence.metrics.timelines.find(stream => stream.kind === "audio")?.codec, "aac", "Encoded AAC audio");
+      }
       if (track.kind === "iso" || track.origin === "program") assert.notEqual(evidence.metrics.avDriftMs, null, `${track.label} contains both A/V streams`);
     } catch (error) {
       evidence.metricError = error.message;

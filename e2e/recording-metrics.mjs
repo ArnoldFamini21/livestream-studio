@@ -7,7 +7,7 @@ const execFileAsync = promisify(execFile);
 /**
  * Inspect encoded media timestamps, not MediaRecorder dataavailable arrival times
  * (those events batch frames and cannot establish A/V continuity). PTS is checked
- * for the Chrome VP8/VP9/AAC/Opus captures used by the soak; this intentionally
+ * for the Chrome video and audio captures used by the soak; this intentionally
  * rejects reordered PTS rather than silently sorting damaged/repeated packets.
  */
 export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 40, minimumSeconds = 0, expectedVideoSize } = {}) {
@@ -50,7 +50,7 @@ export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 4
     const spanSeconds = end - first;
     if (spanSeconds < minimumSeconds) failures.push(`stream ${stream.index} recorded ${spanSeconds.toFixed(3)}s, expected at least ${minimumSeconds}s`);
     return {
-      index: stream.index, kind: stream.codec_type, packets: packets.length,
+      index: stream.index, kind: stream.codec_type, codec: stream.codec_name, packets: packets.length,
       ...(stream.codec_type === "video" ? { width: stream.width, height: stream.height } : {}),
       firstSeconds: first, lastSeconds: last, lastPacketDurationSeconds, endSeconds: end, spanSeconds,
       mediaTimestampSpanSeconds, medianPacketGapSeconds: typicalDuration, tailPacketTimestamps,
@@ -83,7 +83,7 @@ export function inspectPacketTimeline(probe, { maxGapSeconds = 1, maxDriftMs = 4
 export async function probeRecording(file, options = {}) {
   const { stdout } = await execFileAsync(process.env.FFPROBE_PATH || "ffprobe", [
     "-v", "error", "-show_packets", "-show_streams", "-show_entries",
-    "packet=stream_index,pts_time,duration_time:stream=index,codec_type,width,height", "-of", "json", file,
+    "packet=stream_index,pts_time,duration_time:stream=index,codec_type,codec_name,width,height", "-of", "json", file,
   ], { maxBuffer: 128 * 1024 * 1024 });
   return inspectPacketTimeline(JSON.parse(stdout), options);
 }

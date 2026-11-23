@@ -72,7 +72,10 @@ camera and a Web Audio mix. It verifies source chunks after saving. These
 baselines exclude the studio layout, simultaneous encoders, and guest transfer.
 Use `ISOLATION_CODEC=vp8` for the alternate codec. For a short run of the real
 three-seat capture, `SOAK_COMPARE_VP8=1 SOAK_SECONDS=35 npm run test:recording-soak`
-exercises the existing VP8 fallback. The full qualification rejects that override.
+exercises the existing VP8 fallback. Use `SOAK_COMPARE_H264=1` with the same
+short duration to exercise native H.264/AAC support, requiring chunks from
+each video recorder before Stop with the same packet checks. Full qualification
+rejects both overrides.
 
 The existing CI workflow also has an optional `recording_soak` manual input.
 It runs a 35-second preflight followed by two consecutive 1,200-second takes
