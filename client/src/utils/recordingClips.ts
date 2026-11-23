@@ -247,9 +247,11 @@ function waitForMediaEvent(
   element: HTMLMediaElement,
   eventName: string,
   timeoutMs: number,
-  label: string
+  label: string,
+  signal?: AbortSignal
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
     let settled = false;
     const finish = (error?: Error) => {
       if (settled) return;
@@ -257,25 +259,29 @@ function waitForMediaEvent(
       clearTimeout(timer);
       element.removeEventListener(eventName, onEvent);
       element.removeEventListener('error', onError);
+      signal?.removeEventListener('abort', onAbort);
       if (error) reject(error);
       else resolve();
     };
     const onEvent = () => finish();
     const onError = () => finish(new Error(`${label} failed`));
+    const onAbort = () => finish(signal?.reason ?? new DOMException('Cancelled', 'AbortError'));
     const timer = setTimeout(() => finish(new Error(`${label} timed out`)), timeoutMs);
     element.addEventListener(eventName, onEvent);
     element.addEventListener('error', onError);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
-async function resolveClipSourceDuration(element: HTMLMediaElement): Promise<number | null> {
+async function resolveClipSourceDuration(element: HTMLMediaElement, signal?: AbortSignal): Promise<number | null> {
   if (Number.isFinite(element.duration) && element.duration > 0) return element.duration;
   // MediaRecorder WebM blobs often report Infinity until the element seeks past the end.
   try {
-    const seeked = waitForMediaEvent(element, 'seeked', 10_000, 'Reading the clip source duration');
+    const seeked = waitForMediaEvent(element, 'seeked', 10_000, 'Reading the clip source duration', signal);
     element.currentTime = 60 * 60 * 24;
     await seeked;
   } catch {
+    signal?.throwIfAborted();
     return null;
   }
   if (Number.isFinite(element.duration) && element.duration > 0) return element.duration;
@@ -303,7 +309,9 @@ export async function planSmartCrop(
   const cropWidth = rect.sw / Math.max(1, videoSize.width);
   const cropHeight = rect.sh / Math.max(1, videoSize.height);
   if (cropWidth >= 0.999 && cropHeight >= 0.999) return { path: null };
+  signal?.throwIfAborted();
   const analysis = await import('./clipFaceAnalysis.ts');
+  signal?.throwIfAborted();
   let faces: FaceSample[] | null = null;
   let warning: string | undefined;
   try {
@@ -314,8 +322,9 @@ export async function planSmartCrop(
   }
   let activity: SpeakerActivity | null = null;
   if (options.speakerTracks && options.speakerTracks.length > 1) {
-    activity = await analysis.measureSpeakerActivity(options.speakerTracks, range).catch(() => null);
+    activity = await analysis.measureSpeakerActivity(options.speakerTracks, range, undefined, signal).catch(() => null);
   }
+  signal?.throwIfAborted();
   onProgress?.(1);
   const durationSeconds = getClipDurationSeconds(range);
   if (!faces) {
@@ -326,12 +335,41 @@ export async function planSmartCrop(
   return { path: buildCropPath(faces, { cropWidth, cropHeight, durationSeconds, activity }), ...(warning ? { warning } : {}) };
 }
 
+/** An autoplay-blocked AudioContext may remain suspended until another gesture. */
+function resumeClipAudio(context: AudioContext, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    };
+    const abort = () => {
+      cleanup();
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Audio capture did not start'));
+    }, 3000);
+    signal?.addEventListener('abort', abort, { once: true });
+    void context.resume().then(() => {
+      cleanup();
+      resolve();
+    }, (error: unknown) => {
+      cleanup();
+      reject(error);
+    });
+  });
+}
+
 export async function captureRecordingClip(
   source: ClipCaptureSource,
   range: ClipRange,
   onProgress?: (fraction: number) => void,
   renderOptions: ClipRenderOptions = {}
 ): Promise<CapturedRecordingClip> {
+  const { signal } = renderOptions;
+  signal?.throwIfAborted();
   if (typeof MediaRecorder === 'undefined') {
     throw new Error('Clip export is not supported in this browser');
   }
@@ -359,8 +397,9 @@ export async function captureRecordingClip(
   };
 
   try {
-    await waitForMediaEvent(video, 'loadedmetadata', 15_000, 'Loading the clip source');
-    const sourceDuration = await resolveClipSourceDuration(video);
+    if (video.readyState < 1) await waitForMediaEvent(video, 'loadedmetadata', 15_000, 'Loading the clip source', signal);
+    const sourceDuration = await resolveClipSourceDuration(video, signal);
+    signal?.throwIfAborted();
     const clipRange = clampClipRangeToDuration(range, sourceDuration);
     const issue = getClipRangeIssue(clipRange, sourceDuration);
     if (issue) throw new Error(issue);
@@ -383,12 +422,12 @@ export async function captureRecordingClip(
           { width: video.videoWidth, height: video.videoHeight },
           renderOptions.smartCrop,
           (fraction) => onProgress?.(fraction * SMART_CROP_ANALYSIS_SHARE),
-          renderOptions.signal
+          signal
         );
         cropPath = planned.path;
         if (planned.warning) warnings.push(planned.warning);
       } catch (err) {
-        if (renderOptions.signal?.aborted) throw err;
+        if (signal?.aborted) throw err;
         warnings.push(`Smart framing failed (${err instanceof Error ? err.message : 'unknown error'}); the clip is centre-cropped.`);
       }
     }
@@ -401,6 +440,7 @@ export async function captureRecordingClip(
       else if (captionStyle) await loadCanvasFonts([`800 48px ${captionStyle.fontFamily}`]);
     }
 
+    signal?.throwIfAborted();
     if (source.hasVideo) {
       const aspect = source.aspect || 'source';
       const canvas = document.createElement('canvas');
@@ -463,20 +503,20 @@ export async function captureRecordingClip(
         || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (AudioContextCtor) {
         const audioContext = new AudioContextCtor();
+        cleanupTasks.push(() => { void audioContext.close().catch(() => undefined); });
+        await resumeClipAudio(audioContext, signal);
         const elementSource = audioContext.createMediaElementSource(video);
         const destination = audioContext.createMediaStreamDestination();
         elementSource.connect(destination);
         const audioTracks = destination.stream.getAudioTracks();
         if (audioTracks.length > 0) {
           outputTracks.push(...audioTracks);
+          cleanupTasks.push(() => audioTracks.forEach((track) => track.stop()));
           hasRoutedAudio = true;
         }
-        await audioContext.resume();
-        cleanupTasks.push(() => {
-          void audioContext.close().catch(() => undefined);
-        });
       }
     } catch {
+      signal?.throwIfAborted();
       hasRoutedAudio = false;
     }
 
@@ -490,6 +530,7 @@ export async function captureRecordingClip(
         try {
           const elementStream = capture.call(video);
           outputTracks.push(...elementStream.getAudioTracks());
+          cleanupTasks.push(() => elementStream.getTracks().forEach((track) => track.stop()));
         } catch {
           // Video-only capture still produces a usable clip.
         }
@@ -500,9 +541,14 @@ export async function captureRecordingClip(
       throw new Error('No capturable media tracks were found for this clip');
     }
 
-    const seeked = waitForMediaEvent(video, 'seeked', 10_000, 'Seeking to the clip start');
-    video.currentTime = clipRange.startSeconds;
-    await seeked;
+    if (video.currentTime !== clipRange.startSeconds) {
+      const seeked = waitForMediaEvent(video, 'seeked', 10_000, 'Seeking to the clip start', signal);
+      video.currentTime = clipRange.startSeconds;
+      await seeked;
+    } else if (video.readyState < 2) {
+      await waitForMediaEvent(video, 'loadeddata', 10_000, 'Loading the first clip frame', signal);
+    }
+    signal?.throwIfAborted();
 
     const recorder = new MediaRecorder(new MediaStream(outputTracks), { mimeType });
     const chunks: Blob[] = [];
@@ -527,6 +573,7 @@ export async function captureRecordingClip(
         clearTimeout(hardTimeout);
         clearInterval(progressPoll);
         video.removeEventListener('ended', stopCapture);
+        signal?.removeEventListener('abort', onAbort);
       };
       const fail = (error: Error) => {
         if (settled) return;
@@ -540,6 +587,7 @@ export async function captureRecordingClip(
         video.pause();
         reject(error);
       };
+      const onAbort = () => fail(signal?.reason ?? new DOMException('Cancelled', 'AbortError'));
       const stopCapture = () => {
         if (stopRequested) return;
         stopRequested = true;
@@ -561,6 +609,7 @@ export async function captureRecordingClip(
       };
       recorder.onerror = () => fail(new Error('Clip recording failed'));
       video.addEventListener('ended', stopCapture);
+      signal?.addEventListener('abort', onAbort, { once: true });
       try {
         recorder.start(CLIP_CAPTURE_TIMESLICE_MS);
       } catch (error) {
@@ -568,6 +617,7 @@ export async function captureRecordingClip(
         return;
       }
       video.play().catch(() => {
+        if (settled) return;
         // Retry muted so video-only clips can still export under autoplay blocks.
         video.muted = true;
         video.play().catch(() => {
