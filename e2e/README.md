@@ -61,6 +61,19 @@ drift below 40 ms; fixed initial offsets are reported separately. This does not
 prove lip-sync with real hardware. See `e2e/recording-soak.mjs` for output and
 parallel-build settings.
 
+The soak reports browser long tasks, full-canvas paint cadence and draw call
+time, chunk dispatch gaps, and pending writes and hashes. Compare those with
+encoded packet timing. A long disk write or recorder event interval alone does
+not mean that media packets were lost.
+
+For an encoder comparison, `SOAK_SECONDS=20 node e2e/recording-isolation.mjs`
+records a single 720p camera and then a single 1080p canvas with one scaled
+camera and a Web Audio mix. It verifies source chunks after saving. These
+baselines exclude the studio layout, simultaneous encoders, and guest transfer.
+Use `ISOLATION_CODEC=vp8` for the alternate codec. For a short run of the real
+three-seat capture, `SOAK_COMPARE_VP8=1 SOAK_SECONDS=35 npm run test:recording-soak`
+exercises the existing VP8 fallback. The full qualification rejects that override.
+
 The existing CI workflow also has an optional `recording_soak` manual input.
 It runs a 35-second preflight followed by the full 1,200-second qualification on
 Linux. Both runs use real browser capture, native OPFS folder writes and RTC

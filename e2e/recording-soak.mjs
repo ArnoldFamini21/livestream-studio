@@ -9,17 +9,20 @@
  */
 import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
-import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { startHarness, createStudio, joinStudio, admitGuest, stageGuest, eventually, screenshot, repoRoot } from "./harness.mjs";
 import { probeRecording } from "./recording-metrics.mjs";
 import { verifyRecordingChunks } from "./recording-checksums.mjs";
+import { observeCaptureResources } from "./recording-resources.mjs";
 
 const requestedSeconds = Number(process.env.SOAK_SECONDS || 1200);
 assert.ok(Number.isFinite(requestedSeconds) && requestedSeconds >= 15, "SOAK_SECONDS must be at least 15 seconds");
 const artifactDir = path.resolve(process.env.SOAK_ARTIFACT_DIR || path.join(repoRoot, "output/recording-soak", new Date().toISOString().replaceAll(":", "-")));
 const qualification = requestedSeconds >= 1200;
-const result = { qualification, requestedSeconds, cameraPreset: "720p", startedAt: new Date().toISOString(), passed: false, reconnect: null, tracks: [], errors: [] };
+const useVp8Fallback = process.env.SOAK_COMPARE_VP8 === "1";
+assert.ok(!qualification || !useVp8Fallback, "Qualification must use the product's own encoder selection");
+const result = { qualification, requestedSeconds, cameraPreset: "720p", encoderProfile: useVp8Fallback ? "vp8-fallback" : "studio-default", startedAt: new Date().toISOString(), passed: false, reconnect: null, tracks: [], errors: [] };
 await mkdir(path.join(artifactDir, "received"), { recursive: true });
 const seatNames = ["Soak Host", "Soak Guest A", "Soak Guest B"];
 const pages = [];
@@ -34,13 +37,17 @@ async function saveResult() {
 }
 
 // Passive observers: preserve original recorder calls, timing and handlers.
-function installObserver({ folder }) {
+function installObserver({ folder, useVp8Fallback }) {
   // Exercise the real user-selectable preset, matching the short CI suite.
   // The program remains the production 1920x1080 compositor output.
   try { sessionStorage.setItem("preferredVideoQuality", "720p"); } catch { /* storage unavailable */ }
   const state = window.__soak = { recorders: [], channels: [], sockets: [], errors: [], transferSignals: [] };
   const nativeRecorder = window.MediaRecorder;
   window.MediaRecorder = class extends nativeRecorder {
+    static isTypeSupported(mimeType) {
+      if (useVp8Fallback && /\bvp9\b/i.test(mimeType)) return false;
+      return super.isTypeSupported(mimeType);
+    }
     constructor(...args) {
       super(...args);
       const tracks = args[0].getTracks();
@@ -59,6 +66,8 @@ function installObserver({ folder }) {
         stopped: null,
         chunks: 0,
         bytes: 0,
+        peakHashQueueBytes: 0,
+        largestChunkDispatchGapMs: 0,
         flushed: false,
         chunkChecksums: [],
       };
@@ -66,19 +75,26 @@ function installObserver({ folder }) {
       this.__soakRecorderId = row.id;
       this.addEventListener("error", event => state.errors.push(`Recorder ${row.id}: ${event.error?.message || "error"}`));
       let hashing = Promise.resolve();
+      let pendingHashBytes = 0;
       this.addEventListener("start", () => { row.started = performance.now(); });
       this.addEventListener("dataavailable", ({ data }) => {
         if (!data.size) return;
         row.chunks += 1;
         row.bytes += data.size;
-        row.lastChunkDispatchedAt = performance.now();
+        const at = performance.now();
+        if (row.lastChunkDispatchedAt !== null) {
+          row.largestChunkDispatchGapMs = Math.max(row.largestChunkDispatchGapMs, at - row.lastChunkDispatchedAt);
+        }
+        row.lastChunkDispatchedAt = at;
+        pendingHashBytes += data.size;
+        row.peakHashQueueBytes = Math.max(row.peakHashQueueBytes, pendingHashBytes);
         // Only one original MediaRecorder chunk per recorder is read at a time.
         // Native hashing avoids sending the media itself through Playwright.
         hashing = hashing.then(async () => {
           const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await data.arrayBuffer()));
           const sha256 = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
           row.chunkChecksums.push({ bytes: data.size, sha256 });
-        }).catch(error => state.errors.push(String(error)));
+        }).catch(error => state.errors.push(String(error))).finally(() => { pendingHashBytes -= data.size; });
       });
       this.addEventListener("stop", () => {
         row.stopped = performance.now();
@@ -152,7 +168,8 @@ async function instrument(context, name, folder = false) {
       (result.consoleWarnings ||= []).push({ participant: name, type: message.type(), message: message.text() });
     }
   }));
-  await context.addInitScript(installObserver, { folder });
+  await context.addInitScript(installObserver, { folder, useVp8Fallback });
+  await context.addInitScript(observeCaptureResources);
 }
 
 async function folderFiles(page) {
@@ -178,26 +195,25 @@ async function exportFile(page, relative) {
   assert.ok(!relative.split("/").some(part => part === ".." || !part), "safe recording path");
   const target = path.join(artifactDir, "received", relative);
   await mkdir(path.dirname(target), { recursive: true });
-  await writeFile(target, Buffer.alloc(0));
-  // Bounded chunks avoid loading a twenty-minute recording into Node or CDP.
-  let offset = 0;
-  for (;;) {
-    const chunk = await page.evaluate(async ({ relative, offset }) => {
-      let directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("soak-recording-folder");
-      const parts = relative.split("/");
-      for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part);
-      const file = await (await directory.getFileHandle(parts.at(-1))).getFile();
-      const bytes = new Uint8Array(await file.slice(offset, offset + 256 * 1024).arrayBuffer());
-      if (typeof bytes.toBase64 === "function") return { base64: bytes.toBase64(), total: file.size };
-      let binary = "";
-      for (let at = 0; at < bytes.length; at += 0x8000) binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
-      return { base64: btoa(binary), total: file.size };
-    }, { relative, offset });
-    const bytes = Buffer.from(chunk.base64, "base64");
-    await appendFile(target, bytes);
-    offset += bytes.length;
-    if (offset >= chunk.total) break;
-    assert.ok(bytes.length, "export advances through the recording");
+  // Let Chromium stream the disk-backed File directly. Only the path and URL
+  // go over CDP. Node independently verifies the downloaded file's bytes.
+  const downloaded = page.waitForEvent("download", { timeout: 30_000 });
+  void downloaded.catch(() => {});
+  const objectUrl = await page.evaluate(async relative => {
+    let directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("soak-recording-folder");
+    const parts = relative.split("/");
+    for (const part of parts.slice(0, -1)) directory = await directory.getDirectoryHandle(part);
+    const file = await (await directory.getFileHandle(parts.at(-1))).getFile();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(file);
+    link.download = file.name;
+    link.click();
+    return link.href;
+  }, relative);
+  try {
+    await (await downloaded).saveAs(target);
+  } finally {
+    await page.evaluate(url => URL.revokeObjectURL(url), objectUrl).catch(() => {});
   }
   return target;
 }
@@ -302,6 +318,7 @@ try {
     channels: window.__soak.channels.map(({ channel, ...row }) => ({ ...row, state: channel.readyState })),
     transferSignals: window.__soak.transferSignals,
     errors: window.__soak.errors,
+    resources: window.__captureResources,
   }))));
   result.diagnostics = diagnostics;
   assert.ok(diagnostics[0].channels.filter(row => row.label === "rec-transfer").reduce((sum, row) => sum + row.receivedBytes, 0) > 1_000_000, "host received recording bytes through real RTC data channels");
@@ -359,6 +376,7 @@ try {
     errors: window.__soak?.errors,
     channels: window.__soak?.channels.map(({ channel, ...row }) => ({ ...row, state: channel.readyState })),
     transferSignals: window.__soak?.transferSignals,
+    resources: window.__captureResources,
   })).catch(failure => ({ error: String(failure) }))));
   await saveResult();
   await Promise.allSettled(pages.map((page, index) => screenshot(page, artifactDir, `failure-${index}`)));
