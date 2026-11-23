@@ -72,7 +72,21 @@ test('the production rundown is private, revisioned, and restores its next cue',
     action, targetParticipantId: target.joined.participant.id, performedBy: host.joined.participant.id,
   });
   const secretNotes = 'Private direction for the production team';
-  const item = { id: 'opening', title: 'Opening', sceneName: 'Welcome', notes: secretNotes };
+  const assetUrl = 'https://private.example/producer-logo.png';
+  const sharedScene = { layout: 'pip', cameraShape: 'circle', nameTagStyle: 'minimal', pipCorner: 'TR', brandColor: '#d8ca90' };
+  const item = { id: 'opening', title: 'Opening', sceneName: 'Welcome', notes: secretNotes, scene: sharedScene };
+  const submittedItem = {
+    ...item,
+    scene: {
+      ...sharedScene,
+      logoUrl: assetUrl,
+      backgroundColor: `url(${assetUrl})`,
+      visibleOverlayIds: ['local-overlay'],
+      activeMedia: { assetId: 'local-video' },
+      focusedVideoItemId: 'producer-device',
+      stageItemOrder: ['producer-device'],
+    },
+  };
   const request = (operator, requestId, baseRevision, command) => {
     operator.send('production-rundown-update', { requestId, baseRevision, ...command });
     return operator.take('production-rundown-state', payload => payload.requestId === requestId);
@@ -88,11 +102,11 @@ test('the production rundown is private, revisioned, and restores its next cue',
   const admitted = await producer.take('room-joined');
   assert.equal(admitted.participant.role, 'co-host');
 
-  const save = await request(producer, 'producer-save', 0, { action: 'save-item', item });
+  const save = await request(producer, 'producer-save', 0, { action: 'save-item', item: submittedItem });
   assert.deepEqual(save.rundown.items, [item]);
   const delivered = await host.take('production-rundown-state', payload => payload.rundown.revision === 1);
   assert.equal(delivered.requestId, undefined);
-  assert.equal(delivered.rundown.items[0].notes, secretNotes);
+  assert.deepEqual(delivered.rundown.items[0], item);
   const conflict = await request(host, 'stale-save', 0, { action: 'save-item', item: { ...item, title: 'Stale replacement' } });
   assert.match(conflict.error, /rundown changed/i);
   assert.equal(conflict.rundown.items[0].title, 'Opening');
@@ -114,6 +128,7 @@ test('the production rundown is private, revisioned, and restores its next cue',
 
   const saved = snapshots.get(room.id);
   assert.equal(saved.sessionState.productionRundown.cueItemId, item.id);
+  assert.deepEqual(saved.sessionState.productionRundown.items, [item]);
   assert.equal(restoreRoomSnapshots([{ ...saved, room: { ...saved.room, id: restoredId } }]), 1);
   const restored = await join('host', { hostToken }, restoredId);
   assert.deepEqual(restored.joined.productionRundown, cue.rundown);

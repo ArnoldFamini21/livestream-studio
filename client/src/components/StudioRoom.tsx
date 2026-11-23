@@ -22,7 +22,7 @@ import { lazy, Suspense, useEffect, useRef, useState, useCallback, useLayoutEffe
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { isSecondaryCameraEntry, secondaryCameraSearch, studioSeatStorageKey } from '../utils/secondaryCamera.ts';
 import { SecondaryCameraSeat } from './SecondaryCameraSeat.tsx';
-import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload, StageControlAction, StageControlPayload } from '@studio/shared';
+import type { ActiveMedia, StageContentPayload, LogoPlacement, LogoPosition, LogoSize, SignalMessage, Participant, Room, LayoutMode, ChatMessage, ChatTypingPayload, ChatReactionType, StreamDestination, StageActionPayload, StageBackground, Scene, CameraShape, NameTagStyle, QAQuestion, StudioMediaAsset, StudioMediaType, ParticipantNotificationPayload, LivePoll, BroadcastOrientation, RtmpRelayBackupRecordingPayload, RtmpRelayDestinationStatus, StudioBrandingPayload, WaitingRoomBranding, ExternalChatStatusPayload, ExternalChatPlatform, RecordingUploadProgressPayload, StageControlAction, StageControlPayload, ProductionRundownItem, ProductionRundownScene } from '@studio/shared';
 import { ROOM_NOT_OPEN_ERROR_CODE, canExchangeStudioMedia, getStageOwnerId } from '@studio/shared';
 import { NO_PROGRAM_RETURN, getProgramReturnAudioParticipants, getProgramReturnDemand, getProgramReturnRoute, isStageOwner, pickProgramReturnStream, stageContentNeedsProgramVideo } from '../utils/programReturn.ts';
 import { useProgramReturnFeed } from '../hooks/useProgramReturnFeed.ts';
@@ -5932,6 +5932,17 @@ export function StudioRoom() {
     setActiveSceneId(sceneId);
     triggerSceneTransition(scene);
   };
+  const onApplyRundownScene = (scene: ProductionRundownScene, item: Pick<ProductionRundownItem, 'id' | 'sceneName'>) => {
+    applyLayout(scene.layout);
+    setPresentationLayout(scene.layout);
+    if (scene.cameraShape) setCameraShape(scene.cameraShape);
+    if (scene.nameTagStyle) setNameTagStyle(scene.nameTagStyle);
+    if (scene.pipCorner) setPipCorner(scene.pipCorner);
+    if (scene.brandColor) setBrandColor(scene.brandColor);
+    if (scene.backgroundColor) setStageBackground({ type: 'color', value: scene.backgroundColor });
+    setActiveSceneId(null);
+    triggerSceneTransition({ id: item.id, name: item.sceneName });
+  };
   const onDeleteScene = (sceneId: string) => {
     setScenes(prev => prev.filter(s => s.id !== sceneId));
     if (activeSceneId === sceneId) setActiveSceneId(null);
@@ -8801,6 +8812,7 @@ export function StudioRoom() {
               connection: productionRundown,
               scenes,
               onTakeScene: amStageOwner && canUseOperatorControls ? onApplyScene : undefined,
+              onTakeSharedScene: amStageOwner && canUseOperatorControls ? onApplyRundownScene : undefined,
             } : undefined}
             onClose={() => setShowProducerPanel(false)}
           />

@@ -3,6 +3,7 @@ import {
   MAX_RUNDOWN_NOTES,
   MAX_RUNDOWN_SCENE_NAME,
   MAX_RUNDOWN_TITLE,
+  normalizeProductionRundownScene,
   type ProductionRundown,
   type ProductionRundownItem,
 } from '@studio/shared';
@@ -25,11 +26,14 @@ function normalizeItem(value: unknown): ProductionRundownItem | undefined {
   if (!input || typeof input.id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(input.id)) return undefined;
   const title = safeText(input.title, MAX_RUNDOWN_TITLE).replace(/\s+/g, ' ');
   if (!title) return undefined;
+  const sceneName = safeText(input.sceneName, MAX_RUNDOWN_SCENE_NAME);
+  const scene = sceneName && normalizeProductionRundownScene(input.scene);
   return {
     id: input.id,
     title,
     notes: safeText(input.notes, MAX_RUNDOWN_NOTES),
-    sceneName: safeText(input.sceneName, MAX_RUNDOWN_SCENE_NAME),
+    sceneName,
+    ...(scene ? { scene } : {}),
   };
 }
 

@@ -4,8 +4,10 @@ import {
   MAX_RUNDOWN_NOTES,
   MAX_RUNDOWN_SCENE_NAME,
   MAX_RUNDOWN_TITLE,
+  normalizeProductionRundownScene,
   type ProductionRundownCommand,
   type ProductionRundownItem,
+  type ProductionRundownScene,
   type Scene,
 } from '@studio/shared';
 import type { useProductionRundown } from '../hooks/useProductionRundown.ts';
@@ -13,8 +15,9 @@ import './production-rundown.css';
 
 interface Props {
   connection: ReturnType<typeof useProductionRundown>;
-  scenes: Pick<Scene, 'id' | 'name'>[];
+  scenes: Scene[];
   onTakeScene?: (sceneId: string) => void;
+  onTakeSharedScene?: (scene: ProductionRundownScene, item: Pick<ProductionRundownItem, 'id' | 'sceneName'>) => void;
 }
 
 function findRundownScene(scenes: Props['scenes'], name: string) {
@@ -22,20 +25,30 @@ function findRundownScene(scenes: Props['scenes'], name: string) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-export function ProductionRundown({ connection, scenes, onTakeScene }: Props) {
+export function ProductionRundown({ connection, scenes, onTakeScene, onTakeSharedScene }: Props) {
   const { rundown, connected, update } = connection;
   const [draft, setDraft] = useState<{ item: ProductionRundownItem; revision: number; editing: boolean } | null>(null);
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState('');
   const sceneOptionsId = useId();
-  const takeScene = useRef(onTakeScene);
-  takeScene.current = onTakeScene;
+  const take = useRef({ onTakeScene, onTakeSharedScene });
+  take.current = { onTakeScene, onTakeSharedScene };
 
   if (!rundown) return null;
 
   const disabled = pending || !connected;
   const next = rundown.items.find(item => item.id === rundown.cueItemId);
   const scene = next?.sceneName ? findRundownScene(scenes, next.sceneName) : null;
+  const canTakeCue = next?.scene ? Boolean(onTakeSharedScene) : Boolean(onTakeScene && scene);
+  const draftScene = draft?.item.sceneName ? findRundownScene(scenes, draft.item.sceneName) : null;
+  const portableDraftScene = draftScene ? normalizeProductionRundownScene({
+    layout: draftScene.layout,
+    cameraShape: draftScene.cameraShape ?? 'rectangle',
+    nameTagStyle: draftScene.nameTagStyle ?? 'classic',
+    pipCorner: draftScene.pipCorner ?? 'BR',
+    brandColor: draftScene.brandColor,
+    backgroundColor: draftScene.background.type === 'color' ? draftScene.background.value : undefined,
+  }) : undefined;
   const currentItem = rundown.items.find(item => item.id === draft?.item.id);
   const staleDraft = draft && draft.revision !== rundown.revision;
   const revision = rundown.revision;
@@ -65,11 +78,15 @@ export function ProductionRundown({ connection, scenes, onTakeScene }: Props) {
       {next && <div className="production-rundown-cue" role="status">
         <strong>Up next · {next.title}</strong>
         {next.sceneName && <span>Scene · {next.sceneName}</span>}
-        {onTakeScene && scene && <button type="button" className="btn-primary" disabled={disabled} onClick={() => void mutate(
+        {next.scene && <span>Shared layout</span>}
+        {canTakeCue && <button type="button" className="btn-primary" disabled={disabled} onClick={() => void mutate(
           { action: 'take-item', itemId: next.id },
-          { after: () => takeScene.current?.(scene.id) },
+          { after: () => {
+            if (next.scene) take.current.onTakeSharedScene?.(next.scene, next);
+            else if (scene) take.current.onTakeScene?.(scene.id);
+          } },
         )}>Take scene</button>}
-        {onTakeScene && next.sceneName && !scene && <p>Save exactly one scene with this name in this browser to take it.</p>}
+        {onTakeScene && next.sceneName && !next.scene && !scene && <p>Save exactly one scene with this name in this browser to take it.</p>}
         <button type="button" className="btn-ghost" disabled={disabled} onClick={() => void mutate({ action: 'cue-item', itemId: null })}>Clear cue</button>
       </div>}
       {!connected && <p role="status">Reconnecting to the studio…</p>}
@@ -80,6 +97,7 @@ export function ProductionRundown({ connection, scenes, onTakeScene }: Props) {
             <strong>{item.title}</strong>
             {item.id === rundown.cueItemId && <span>Cued</span>}
             {item.id === rundown.lastTakenItemId && <span>Last taken</span>}
+            {item.scene && <span>Shared layout</span>}
           </div>
           {item.sceneName && <span>Scene · {item.sceneName}</span>}
           {item.notes && <p className="production-rundown-notes">{item.notes}</p>}
@@ -96,9 +114,23 @@ export function ProductionRundown({ connection, scenes, onTakeScene }: Props) {
           <input required maxLength={MAX_RUNDOWN_TITLE} value={draft.item.title} onChange={event => setDraft({ ...draft, item: { ...draft.item, title: event.target.value } })} />
         </label>
         <label>Scene name
-          <input list={sceneOptionsId} maxLength={MAX_RUNDOWN_SCENE_NAME} placeholder="Optional" value={draft.item.sceneName} onChange={event => setDraft({ ...draft, item: { ...draft.item, sceneName: event.target.value } })} />
+          <input list={sceneOptionsId} maxLength={MAX_RUNDOWN_SCENE_NAME} placeholder="Optional" value={draft.item.sceneName} onChange={event => {
+            const sceneName = event.target.value;
+            const sameScene = sceneName.trim().toLowerCase() === draft.item.sceneName.trim().toLowerCase();
+            setDraft({ ...draft, item: { ...draft.item, sceneName, scene: sameScene ? draft.item.scene : undefined } });
+          }} />
           <datalist id={sceneOptionsId}>{Array.from(new Set(scenes.map(entry => entry.name))).map(name => <option key={name} value={name} />)}</datalist>
         </label>
+        <div className="production-rundown-actions">
+          {portableDraftScene && <button type="button" className="btn-secondary" disabled={disabled || Boolean(staleDraft)} onClick={() => setDraft({
+            ...draft, item: { ...draft.item, scene: portableDraftScene },
+          })}>{draft.item.scene ? 'Refresh shared layout' : 'Share saved layout'}</button>}
+          {draft.item.scene && <button type="button" className="btn-ghost" disabled={disabled || Boolean(staleDraft)} onClick={() => setDraft({
+            ...draft, item: { ...draft.item, scene: undefined },
+          })}>Remove shared layout</button>}
+        </div>
+        {draft.item.scene && <p>Taking this layout keeps the active shared media, logo, and overlays on the stage owner's browser.</p>}
+        {draftScene?.layout === 'custom' && !draft.item.scene && <p>Take this custom layout in the browser that saved it.</p>}
         <label>Private notes
           <textarea rows={3} maxLength={MAX_RUNDOWN_NOTES} value={draft.item.notes} onChange={event => setDraft({ ...draft, item: { ...draft.item, notes: event.target.value } })} />
         </label>
