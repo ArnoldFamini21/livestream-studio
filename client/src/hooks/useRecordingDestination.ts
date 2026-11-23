@@ -281,15 +281,16 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
   }, [handle, openTake, scheduleManifest, writeManifest]);
 
   /** Timing for the host's own tracks once the recorder reports it. */
-  const attachCaptures = useCallback((sessionId: string, files: Array<{ label: string; capture?: RecordingCaptureMetadata }>) => {
+  const attachCaptures = useCallback(async (sessionId: string, files: Array<{ label: string; capture?: RecordingCaptureMetadata }>) => {
     const take = takesRef.current.get(sessionId);
     if (!take) return;
     for (const file of files) {
       const entry = [...take.tracks.values()].find((track) => track.label === file.label && track.origin === 'host');
       if (entry && file.capture) entry.capture = file.capture;
     }
-    scheduleManifest(take);
-  }, [scheduleManifest]);
+    try { await writeManifest(take); }
+    catch { setTakeHistoryError('Could not save track timing to the take checklist on the recording drive.'); }
+  }, [writeManifest]);
 
   const notePause = useCallback((sessionId: string, paused: boolean, at = timelineNow()) => {
     const take = takesRef.current.get(sessionId);

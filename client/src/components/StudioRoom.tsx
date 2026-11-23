@@ -1733,7 +1733,7 @@ export function StudioRoom() {
     const takeId = localRecordingTakeRef.current;
     localRecordingTakeRef.current = null;
     if (takeId) {
-      recordingWorkflowRef.current.attachCaptures(takeId, result.files);
+      await recordingWorkflowRef.current.attachCaptures(takeId, result.files);
       recordingWorkflowRef.current.endTake(takeId);
     }
     return result;
@@ -4760,6 +4760,7 @@ export function StudioRoom() {
         const durationMs = result.files.find((file) => file.capture?.durationMs)?.capture?.durationMs;
         if (plan && !plan.uploadAfterStop && !result.progressiveUpload && (plan.hostFolderTake || workflow.invite)) {
           // Nothing goes to the media-server: the host's folder holds the take.
+          if (plan.hostFolderTake) await workflow.attachCaptures(sessionId, result.files);
           try {
             await persistRecordingSession({
               roomName: `${room?.name || 'Studio'} - ${participant.name}`,
@@ -4770,7 +4771,6 @@ export function StudioRoom() {
             console.warn('Participant recording could not be added to the browser library:', error);
           }
           if (plan.hostFolderTake) {
-            workflow.attachCaptures(sessionId, result.files);
             addToast('Your tracks were recorded straight into the recording folder.', 'success');
           } else {
             addToast('Recording saved in this browser. Sending your tracks to the host…', 'info');

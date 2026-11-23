@@ -287,9 +287,9 @@ try {
   const files = await eventually(async () => {
     const files = await folderFiles(host);
     const manifest = files.find(file => file.manifest)?.manifest;
-    return manifest?.tracks.length >= 7 && manifest.tracks.every(track => track.status === "complete"
+    return manifest?.tracks.length >= 7 && manifest.tracks.every(track => track.status === "complete" && track.startOffsetMs !== null
       && files.some(file => file.path === track.path && file.bytes === track.bytes)) ? files : null;
-  }, { timeout: 180_000, interval: 1000, message: "All seven program/ISO/audio tracks must finish in the host folder" });
+  }, { timeout: 180_000, interval: 1000, message: "All seven program/ISO/audio tracks and their capture timing must finish in the host folder" });
   const manifest = files.find(file => file.manifest).manifest;
   result.manifest = manifest;
   for (const name of seatNames) {
