@@ -1048,6 +1048,17 @@ export function StudioRoom() {
     }, 1000);
     recordingCountdownCancelRef.current = () => finish(false);
   }), []);
+  const prepareRecordingStart = useCallback((primeCompositor: boolean) => {
+    const pending = new AbortController();
+    programRecordingStartRef.current = pending;
+    if (primeCompositor) setProgramRecordingPreparing(true);
+    return pending;
+  }, []);
+  const finishRecordingPreparation = useCallback((pending: AbortController) => {
+    pending.abort();
+    programRecordingStartRef.current = null;
+    setProgramRecordingPreparing(false);
+  }, []);
   const cancelRecordingStart = useCallback(() => {
     const pending = programRecordingStartRef.current;
     if (!pending || pending.signal.aborted) return false;
@@ -4082,10 +4093,8 @@ export function StudioRoom() {
           addToast(err instanceof Error ? err.message : 'Failed to stop recording.', 'error');
         }
       } else {
-        programRecordingStart = new AbortController();
-        programRecordingStartRef.current = programRecordingStart;
+        programRecordingStart = prepareRecordingStart(true);
         const { signal } = programRecordingStart;
-        setProgramRecordingPreparing(true);
         // Still inside the click: re-grant the remembered folder, ask for
         // persistent storage and check browser storage headroom.
         const startCheck = await recordingWorkflowRef.current.prepareStart(10_000_000 + estimateRecordingBitsPerSecond(
@@ -4203,11 +4212,7 @@ export function StudioRoom() {
       }
     } finally {
       releaseProgramSource?.();
-      if (programRecordingStart) {
-        programRecordingStart.abort();
-        programRecordingStartRef.current = null;
-        setProgramRecordingPreparing(false);
-      }
+      if (programRecordingStart) finishRecordingPreparation(programRecordingStart);
       recordingActionRef.current = false;
       setProgramRecordingFinalizing(false);
     }
@@ -4215,45 +4220,84 @@ export function StudioRoom() {
 
   // Local recording (separate on-stage tracks)
   const onStartLocalRecording = useCallback(async () => {
-    if (!myParticipant || !canControlRecording || folderSaving || localRecordingFinalizing || programRecordingFinalizing || !recordingReadiness.canStart) return;
-    const programSource = createProgramRecordingSource({
-      compositeStream: compositeStreamRef.current,
-      acquireProgramAudio: programAudioMix.acquire,
-    });
-    const sources = buildLocalRecordingSources({
-      localParticipant: myParticipant,
-      localStream,
-      participants,
-      remoteStreams,
-      remoteScreenStreams: meshRemoteScreenStreams,
-      screenStream,
-      isScreenSharing,
-      programSource,
-      createScreenPictureInPictureSource: createScreenPictureInPictureRecordingSource,
-    });
+    if (!myParticipant || !canControlRecording || folderSaving || recordingActionRef.current || localRecordingFinalizing || programRecordingFinalizing || !recordingReadiness.canStart) return;
+    recordingActionRef.current = true;
+    let recordingStart: AbortController | undefined;
+    let releasePreparedSources: (() => void) | undefined;
+    let pendingTakeId: string | null = null;
+    try {
+      const programSource = createProgramRecordingSource({
+        compositeStream: compositeStreamRef.current,
+        acquireProgramAudio: programAudioMix.acquire,
+      });
+      releasePreparedSources = programSource?.cleanup;
+      recordingStart = prepareRecordingStart(Boolean(programSource));
+      const { signal } = recordingStart;
+      if (programSource && !(await waitForProgramFrames(signal))) {
+        if (!signal.aborted) addToast('The program video timed out. Try recording again.', 'error');
+        return;
+      }
+      if (signal.aborted) return;
+      const sources = buildLocalRecordingSources({
+        localParticipant: myParticipant,
+        localStream,
+        participants,
+        remoteStreams,
+        remoteScreenStreams: meshRemoteScreenStreams,
+        screenStream,
+        isScreenSharing,
+        programSource,
+        createScreenPictureInPictureSource: createScreenPictureInPictureRecordingSource,
+      });
+      releasePreparedSources = () => sources.forEach(source => source.cleanup?.());
+      if (sources.length === 0) return;
 
-    if (sources.length === 0) return;
-    const localTake = recordingWorkflowRef.current.destination.ready
-      ? await recordingWorkflowRef.current.beginTake(`local-${Date.now().toString(36)}`, myParticipant.name)
-      : null;
-    localRecordingTakeRef.current = localTake?.sessionId || null;
-    await startLocalRecording(sources, null, localTake ? { storage: localTake.forParticipant('Tracks') } : undefined);
+      const localTake = recordingWorkflowRef.current.destination.ready
+        ? await recordingWorkflowRef.current.beginTake(`local-${Date.now().toString(36)}`, myParticipant.name)
+        : null;
+      pendingTakeId = localTake?.sessionId ?? null;
+      if (signal.aborted) return;
+
+      const options = localTake ? { storage: localTake.forParticipant('Tracks') } : undefined;
+      localRecordingTakeRef.current = pendingTakeId;
+      // The recorder now owns the sources. Keep drawing while it starts.
+      programRecordingStartRef.current = null;
+      releasePreparedSources = undefined;
+      await startLocalRecording(sources, null, options);
+      pendingTakeId = null;
+    } catch (error) {
+      if (!recordingStart?.signal.aborted) {
+        addToast(error instanceof Error ? error.message : 'Could not start local recording.', 'error');
+      }
+    } finally {
+      if (pendingTakeId) {
+        recordingWorkflowRef.current.endTake(pendingTakeId);
+        if (localRecordingTakeRef.current === pendingTakeId) localRecordingTakeRef.current = null;
+      }
+      releasePreparedSources?.();
+      if (recordingStart) finishRecordingPreparation(recordingStart);
+      recordingActionRef.current = false;
+    }
   }, [
-    localRecordingFinalizing,
-    folderSaving,
-    programRecordingFinalizing,
-    programAudioMix,
+    addToast,
     canControlRecording,
     createScreenPictureInPictureRecordingSource,
+    finishRecordingPreparation,
+    folderSaving,
     isScreenSharing,
+    localRecordingFinalizing,
     localStream,
+    meshRemoteScreenStreams,
     myParticipant,
     participants,
+    prepareRecordingStart,
+    programAudioMix,
+    programRecordingFinalizing,
     recordingReadiness.canStart,
     remoteStreams,
-    meshRemoteScreenStreams,
     screenStream,
     startLocalRecording,
+    waitForProgramFrames,
   ]);
 
   const onAddRecordingMarker = useCallback((seconds: number, label: string) => {
