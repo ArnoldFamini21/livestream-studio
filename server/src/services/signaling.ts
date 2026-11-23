@@ -45,6 +45,7 @@ import type {
   ProductionRundownUpdate,
 } from '@studio/shared';
 import { WatchCaptionBuffer, WATCH_CAPTIONS_OFF } from './watchCaptions.js';
+import { issuePrivateTakeUploadGrant, registerPrivateTake, type PendingRecordingRecovery } from './recordingRecovery.js';
 import {
   EMPTY_PRODUCTION_RUNDOWN,
   RECORDING_UPLOAD_PROGRESS_STATUSES,
@@ -192,6 +193,7 @@ interface RoomState {
   recordingStartedAt?: string;
   recordingSessionId?: string;
   recordingPaused?: boolean;
+  privateRecordingRecovery?: PendingRecordingRecovery;
   liveStreamStartedAt?: string;
   watchCaptions?: WatchCaptionBuffer;
   liveStreamStartedBy?: string;
@@ -330,6 +332,7 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'viewer-chat-block',
   'viewer-chat-unblock',
   'recording-state-changed',
+  'recording-recovery-grant-request',
   'recording-countdown',
   'update-participant-profile',
   'recording-upload-token-request',
@@ -1550,6 +1553,9 @@ function handleMessage(ws: WebSocket, message: SignalMessage) {
       break;
     case 'recording-state-changed':
       handleRecordingStateChange(ws, message.payload);
+      break;
+    case 'recording-recovery-grant-request':
+      handleRecordingRecoveryGrantRequest(ws, message.payload.takeId);
       break;
     case 'recording-upload-token-request':
       handleRecordingUploadTokenRequest(ws, message.payload);
@@ -3222,6 +3228,54 @@ export function findWatchLinkRoom(id: string): { room: Room; watchId: string } |
   return undefined;
 }
 
+function sendRecordingRecoveryGrant(entry: ParticipantEntry, recovery: PendingRecordingRecovery, secret: string) {
+  if (entry.participant.role !== 'guest' || entry.participant.status === 'green-room') return;
+  const grant = issuePrivateTakeUploadGrant(recovery, entry.participant.id, secret);
+  if (grant) send(entry.ws, { type: 'recording-recovery-grant', payload: grant });
+}
+
+function handleRecordingRecoveryGrantRequest(ws: WebSocket, takeId: string) {
+  const mapping = wsToParticipant.get(ws);
+  if (!mapping || !isValidRecordingSessionId(takeId)) return;
+  const roomState = rooms.get(mapping.roomId);
+  const recovery = roomState?.privateRecordingRecovery;
+  const entry = roomState?.participants.get(mapping.participantId);
+  const secret = getLiveStreamTokenSecret();
+  if (entry && recovery?.takeId === takeId && secret) sendRecordingRecoveryGrant(entry, recovery, secret);
+}
+
+async function setUpRecordingRecovery(ws: WebSocket, roomState: RoomState, performer: ParticipantEntry, takeId: string) {
+  const unavailable = () => send(ws, { type: 'recording-recovery-state', payload: { takeId, status: 'unavailable' } });
+  const mediaUrl = process.env.MEDIA_SERVER_URL?.trim();
+  const secret = getLiveStreamTokenSecret();
+  if (performer.participant.role !== 'host' || roomState.handedOffHostId || !roomState.createdByOwner || !secret || !mediaUrl) {
+    unavailable();
+    return;
+  }
+  const participants = Array.from(roomState.participants.values())
+    .map(entry => entry.participant)
+    .filter(participant => participant.role === 'guest' && participant.status === 'on-stage')
+    .map(participant => ({ participantId: participant.id, participantName: participant.name }));
+  if (!participants.length) {
+    unavailable();
+    return;
+  }
+
+  try {
+    const recovery = await registerPrivateTake({
+      roomId: roomState.room.id, takeId, hostToken: roomState.hostToken, participants, mediaUrl, secret,
+    });
+    if (roomState.recordingSessionId === takeId) roomState.privateRecordingRecovery = recovery;
+    send(ws, { type: 'recording-recovery-state', payload: { takeId, status: 'ready', expiresAt: new Date(recovery.expiresAtMs).toISOString() } });
+    for (const participant of recovery.participants) {
+      const entry = roomState.participants.get(participant.participantId);
+      if (entry) sendRecordingRecoveryGrant(entry, recovery, secret);
+    }
+  } catch {
+    unavailable();
+  }
+}
+
 function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayload) {
   const mapping = wsToParticipant.get(ws);
   if (!mapping) return;
@@ -3245,6 +3299,7 @@ function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayloa
     return;
   }
 
+  const starting = payload.recording && !roomState.recordingStartedAt;
   const now = new Date().toISOString();
   if (payload.recording) {
     const requestedSessionId = isValidRecordingSessionId(payload.sessionId) ? payload.sessionId : undefined;
@@ -3280,6 +3335,9 @@ function handleRecordingStateChange(ws: WebSocket, payload: RecordingStatePayloa
     type: 'recording-state-changed',
     payload: authoritativePayload,
   });
+  if (starting && payload.privateRecovery === true && roomState.recordingSessionId) {
+    void setUpRecordingRecovery(ws, roomState, performer, roomState.recordingSessionId);
+  }
 }
 
 function handleRecordingUploadTokenRequest(

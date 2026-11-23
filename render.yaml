@@ -116,6 +116,8 @@ services:
         sync: false
       - key: PREMIERE_STORAGE_PRIVATE
         sync: false
+      - key: RECORDING_RECOVERY_ENABLED
+        sync: false
       # One broadcast at a time on the free instance.
       - key: MAX_RELAY_SESSIONS
         value: "1"
