@@ -22,8 +22,10 @@ export async function eventually(check, { timeout = 30_000, interval = 100, mess
 }
 
 /** Run the built application with no production accounts, credentials, or external services. */
-export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR || path.join(repoRoot, 'output/e2e'), apiPort = Number(process.env.E2E_API_PORT || 3001), port = Number(process.env.E2E_PORT || 5199), reuseServer = process.env.E2E_REUSE_SERVER === '1', distDir = path.join(repoRoot, 'client/dist'), loopbackMediaPort, liveTokenSecret } = {}) {
+export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR || path.join(repoRoot, 'output/e2e'), apiPort = Number(process.env.E2E_API_PORT || 3001), port = Number(process.env.E2E_PORT || 5199), reuseServer = process.env.E2E_REUSE_SERVER === '1', distDir = path.join(repoRoot, 'client/dist'), loopbackMediaPort, liveTokenSecret, mediaMembershipControl = false } = {}) {
   assert.ok(!reuseServer || !process.env.CI, 'CI must start isolated application servers');
+  assert.ok(loopbackMediaPort === undefined || (Number.isInteger(loopbackMediaPort) && loopbackMediaPort > 0 && loopbackMediaPort <= 65535));
+  assert.ok(!mediaMembershipControl || (loopbackMediaPort && liveTokenSecret && !reuseServer), 'Membership control requires isolated signaling, media and a shared test secret');
   artifactDir = path.resolve(artifactDir);
   await mkdir(artifactDir, { recursive: true });
   const scratch = await mkdtemp(path.join(artifactDir, 'scratch-'));
@@ -37,6 +39,7 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PATH|TMPDIR|TMP|TEMP|XDG_.*|NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|SYSTEMROOT)$/.test(key)));
   Object.assign(env, { NODE_ENV: 'test', PORT: String(apiPort), CLIENT_URL: url, STUDIO_OWNER_EMAILS: '', STUDIO_CREATE_SECRET: '', STUN_URLS: 'stun:127.0.0.1:9', ROOM_PERSISTENCE_DISABLED: 'true', ACCOUNT_AUTH_PERSISTENCE_DISABLED: 'true', RECORDING_CATALOG_PERSISTENCE_DISABLED: 'true', BRAND_KIT_CATALOG_PERSISTENCE_DISABLED: 'true', WORKSPACE_STUDIO_CATALOG_PERSISTENCE_DISABLED: 'true', WORKSPACE_TEAM_CATALOG_PERSISTENCE_DISABLED: 'true' });
   if (liveTokenSecret) env.LIVE_STREAM_TOKEN_SECRET = liveTokenSecret;
+  if (mediaMembershipControl) env.MEDIA_SERVER_URL = `http://localhost:${loopbackMediaPort}`;
   const server = reuseServer ? null : spawn(process.execPath, [path.join(repoRoot, 'server/dist/index.js')], { cwd: artifactDir, env, stdio: ['ignore', 'pipe', 'pipe'] });
   server?.stdout.pipe(serverLog);
   server?.stderr.pipe(serverLog);
@@ -47,7 +50,6 @@ export async function startHarness({ artifactDir = process.env.E2E_ARTIFACT_DIR 
   const htaccess = await readFile(path.join(repoRoot, 'client/public/.htaccess'), 'utf8');
   const productionCsp = htaccess.match(/Content-Security-Policy "([^"]+)"/)[1];
   // Only the loopback API's transport differs from production's https/wss.
-  assert.ok(loopbackMediaPort === undefined || (Number.isInteger(loopbackMediaPort) && loopbackMediaPort > 0 && loopbackMediaPort <= 65535));
   const mediaOrigins = loopbackMediaPort ? ` http://localhost:${loopbackMediaPort} ws://localhost:${loopbackMediaPort}` : '';
   const csp = productionCsp.replace("connect-src 'self'", `connect-src 'self' ${apiUrl} ws://localhost:${apiPort}${mediaOrigins}`);
   const dist = path.resolve(distDir);

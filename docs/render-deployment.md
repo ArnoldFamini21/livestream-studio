@@ -130,7 +130,19 @@ Set `SFU_NATIVE_SCREEN_ENABLED=true` on a test media server to enable a separate
 
 An on-stage client receives the capability when it authenticates with a current SFU token. Screen video and available system audio use a separate connection while the camera and microphone remain on their original connection. Backstage and older clients continue receiving screens over mesh when connected. When a stage peer cannot receive the separate screen by SFU or mesh, the presenter returns to the combined screen and camera with mixed audio.
 
-For browser qualification, deploy the branch to isolated test endpoints or run both services on a CI runner. Put five independent Chromium clients on stage and supply a synthetic display stream with a distinct picture and tone. Confirm the receiver gets camera, microphone, screen, and system audio at the same time, with one audible copy of the screen audio. Repeat share, stop, and restart, then move the presenter backstage and verify both SFU sources stop. Repeat with the flag off and a receiver using the older protocol. Live multi-peer playback and TURN remain qualification steps before enabling the preview in production.
+Run the standalone Chromium qualification on a development machine or CI runner with the browser installed and ports 3079, 3379, and 5279 available. The test starts isolated signaling and media services and sets a shared test secret and preview flag for them.
+
+```sh
+npm run -w @studio/shared build
+npm run -w @studio/server build
+npm run -w @studio/media-server build
+VITE_API_URL=http://localhost:3079 VITE_WS_URL=ws://localhost:3079/ws \
+  VITE_MEDIA_HTTP_URL=http://localhost:3379 VITE_MEDIA_WS_URL=ws://localhost:3379/rtmp \
+  npm run -w @studio/client build
+node --test e2e/sfu-native-screen.mjs
+```
+
+The test uses a synthetic display stream while each guest's camera and microphone are active. It checks that the receiver gets four distinct media tracks, that restarting the screen reuses the same subscriber track IDs, and that moving a presenter backstage closes both their publishers while the other guests remain on SFU. Qualification before production also needs a flag-off and mixed-version browser run, a check for duplicate audible playback, and the same media checks over the deployed TURN route.
 
 **Fallback.** With no TURN settings at all, the server uses Metered's free Open Relay (`staticauth.openrelay.metered.ca`) and mints short-lived credentials from its published secret. The old static `openrelayproject` password no longer works. The free relay is shared by everyone and capped at 20 GB a month, so it is not treated as production ready by the health metadata.
 

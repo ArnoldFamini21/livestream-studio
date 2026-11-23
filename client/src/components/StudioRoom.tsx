@@ -3830,6 +3830,8 @@ export function StudioRoom() {
                 return;
               }
               separateScreenStreamIdRef.current = null;
+              // Clear the old stream ID before announcing the combined share, which has no separate ID.
+              announce(false);
               await publishScreenTrackRef.current(null);
               if (screenTrack.readyState === 'live') await publishCombinedScreen();
             }).catch((error) => console.warn('Screen transport switch failed:', error));
