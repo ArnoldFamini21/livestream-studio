@@ -59,6 +59,100 @@ import { drawWidgetCaptureFrame, WIDGET_CAPTURE_ATTRIBUTE, type WidgetCaptureSou
 
 /** The program's frame rate: the canvas stream and the draw timer. */
 const COMPOSITOR_FPS = 30;
+const PROGRAM_FRAME_WAIT_MS = 3_000;
+const PROGRAM_FRAME_MAX_INTERVAL_MS = 500;
+
+interface ProgramTrackProcessor {
+  new (options: { track: MediaStreamTrack; maxBufferSize: number }): {
+    readable: ReadableStream<VideoFrame>;
+  };
+}
+
+/** Confirm that the program stream is delivering frames, using a temporary sink. */
+async function waitForProgramCapture(track: MediaStreamTrack, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted || track.readyState !== 'live') return false;
+
+  // A separate track lets us cancel the probe without affecting the recorder,
+  // relay, or return. No pixels are copied or retained by the probe.
+  const probe = track.clone();
+  try {
+    return await new Promise<boolean>((resolve) => {
+      let previousFrameAt = Number.NEGATIVE_INFINITY;
+      let finished = false;
+      let dispose = () => {};
+      const finish = (ready: boolean) => {
+        if (finished) return;
+        finished = true;
+        window.clearTimeout(timeout);
+        signal.removeEventListener('abort', onAbort);
+        dispose();
+        resolve(ready);
+      };
+      const onAbort = () => finish(false);
+      const timeout = window.setTimeout(onAbort, PROGRAM_FRAME_WAIT_MS);
+      signal.addEventListener('abort', onAbort, { once: true });
+
+      const observeFrame = (at: number) => {
+        if (at > previousFrameAt && at - previousFrameAt <= PROGRAM_FRAME_MAX_INTERVAL_MS) {
+          finish(track.readyState === 'live');
+        }
+        previousFrameAt = at;
+      };
+
+      const Processor = (globalThis as typeof globalThis & { MediaStreamTrackProcessor?: ProgramTrackProcessor }).MediaStreamTrackProcessor;
+      if (Processor) {
+        try {
+          const reader = new Processor({ track: probe, maxBufferSize: 1 }).readable.getReader();
+          dispose = () => { void reader.cancel().catch(() => {}); };
+          void (async () => {
+            while (!finished) {
+              const { done, value: frame } = await reader.read();
+              if (done) { finish(false); break; }
+              const capturedAt = frame.timestamp / 1_000;
+              frame.close();
+              if (!finished) observeFrame(capturedAt);
+            }
+          })().catch(onAbort);
+          return;
+        } catch { /* Fall through to browser playback on unsupported tracks. */ }
+      }
+
+      const video = document.createElement('video');
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = new MediaStream([probe]);
+      let stopObserving: (() => void) | undefined;
+      dispose = () => {
+        stopObserving?.();
+        video.pause();
+        video.srcObject = null;
+      };
+      if (typeof video.getVideoPlaybackQuality === 'function') {
+        let frameCount = 0;
+        const poll = window.setInterval(() => {
+          const frames = video.getVideoPlaybackQuality().totalVideoFrames;
+          if (frames === frameCount) return;
+          frameCount = frames;
+          observeFrame(performance.now());
+        }, 50);
+        stopObserving = () => window.clearInterval(poll);
+      } else if (typeof video.requestVideoFrameCallback === 'function') {
+        const draw: VideoFrameRequestCallback = (_now, { mediaTime }) => {
+          observeFrame(mediaTime * 1_000);
+          if (!finished) callback = video.requestVideoFrameCallback(draw);
+        };
+        let callback = video.requestVideoFrameCallback(draw);
+        stopObserving = () => video.cancelVideoFrameCallback?.(callback);
+      } else {
+        finish(false);
+        return;
+      }
+      void video.play().catch(onAbort);
+    });
+  } finally {
+    probe.stop();
+  }
+}
 
 export interface CompositorProps {
   containerRef: React.RefObject<HTMLDivElement>;
@@ -1588,5 +1682,10 @@ export function useCompositor({
     return observeCompositorLayout(container, () => cache.invalidate(performance.now()));
   }, [containerRef, isActive]);
 
-  return { compositeStreamRef, compositeCanvasRef: canvasRef };
+  const waitForProgramFrames = useCallback((signal: AbortSignal) => {
+    const track = compositeStreamRef.current?.getVideoTracks()[0];
+    return track ? waitForProgramCapture(track, signal) : Promise.resolve(false);
+  }, []);
+
+  return { compositeStreamRef, compositeCanvasRef: canvasRef, waitForProgramFrames };
 }

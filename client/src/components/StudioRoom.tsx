@@ -1021,6 +1021,8 @@ export function StudioRoom() {
   // A short on-stage countdown before a recording starts. Escape or Cancel
   // stops it, so a misclick never produces a stray take.
   const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
+  const [programRecordingPreparing, setProgramRecordingPreparing] = useState(false);
+  const programRecordingStartRef = useRef<AbortController | null>(null);
   // The host's countdown as guests see it (one message from the host, ticked locally).
   const { value: remoteRecordingCountdown, start: startRemoteRecordingCountdown, stop: stopRemoteRecordingCountdown } = useRecordingCountdownMirror();
   const isPortraitPhone = useIsPortraitPhone();
@@ -1046,7 +1048,18 @@ export function StudioRoom() {
     }, 1000);
     recordingCountdownCancelRef.current = () => finish(false);
   }), []);
-  useEffect(() => () => recordingCountdownCancelRef.current?.(), []);
+  const cancelRecordingStart = useCallback(() => {
+    const pending = programRecordingStartRef.current;
+    if (!pending || pending.signal.aborted) return false;
+    pending.abort();
+    setProgramRecordingPreparing(false);
+    recordingCountdownCancelRef.current?.();
+    return true;
+  }, []);
+  useEffect(() => () => {
+    programRecordingStartRef.current?.abort();
+    recordingCountdownCancelRef.current?.();
+  }, []);
   const [showProducerPanel, setShowProducerPanel] = useState(false);
   const [showWebinarQA, setShowWebinarQA] = useState(false);
   const [showPolls, setShowPolls] = useState(false);
@@ -2090,10 +2103,10 @@ export function StudioRoom() {
     chatOverlay: compositorChatOverlay,
     widgetCaptureSources: widgetTabCapture.sourcesRef,
   };
-  const { compositeStreamRef, compositeCanvasRef } = useCompositor({
+  const { compositeStreamRef, compositeCanvasRef, waitForProgramFrames } = useCompositor({
     ...composition,
     containerRef: stageRef,
-    isActive: shouldRunCompositor({ live: isLive || testStreamOnAir, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
+    isActive: programRecordingPreparing || shouldRunCompositor({ live: isLive || testStreamOnAir, mixRecording: isRecording, localRecording: isLocalRecording, programReturn: programReturnDemand.video }),
     orientation: broadcastOrientation,
   });
 
@@ -3891,6 +3904,8 @@ export function StudioRoom() {
     });
     recordingActionRef.current = true;
     setProgramRecordingFinalizing(action !== 'start');
+    let programRecordingStart: AbortController | undefined;
+    let releaseProgramSource: (() => void) | undefined;
     try {
       if (action === 'stop-session') {
         // A rejoined operator has shared session state but no local program recorder.
@@ -4067,16 +4082,20 @@ export function StudioRoom() {
           addToast(err instanceof Error ? err.message : 'Failed to stop recording.', 'error');
         }
       } else {
+        programRecordingStart = new AbortController();
+        programRecordingStartRef.current = programRecordingStart;
+        const { signal } = programRecordingStart;
+        setProgramRecordingPreparing(true);
         // Still inside the click: re-grant the remembered folder, ask for
         // persistent storage and check browser storage headroom.
         const startCheck = await recordingWorkflowRef.current.prepareStart(10_000_000 + estimateRecordingBitsPerSecond(
           buildParticipantRecordingSources({ localParticipant: myParticipant, localStream, screenStream, isScreenSharing }),
         ));
-        if (!startCheck.proceed) return;
+        if (signal.aborted || !startCheck.proceed) return;
         if (startCheck.headroom.status === 'warning') addToast(startCheck.headroom.message, 'warning');
         // Guests see the same 3-2-1 (and its cancellation) on their screens.
         send({ type: 'recording-countdown', payload: { seconds: RECORDING_COUNTDOWN_SECONDS } });
-        if (!(await runRecordingCountdown())) {
+        if (!(await runRecordingCountdown()) || signal.aborted) {
           send({ type: 'recording-countdown', payload: { seconds: 0, cancelled: true } });
           return;
         }
@@ -4085,6 +4104,7 @@ export function StudioRoom() {
           compositeStream: compositeStreamRef.current,
           acquireProgramAudio: programAudioMix.acquire,
         });
+        releaseProgramSource = programSource?.cleanup;
 
         if (programSource) {
           const recorder = useStreamingPrimaryRecording
@@ -4108,7 +4128,14 @@ export function StudioRoom() {
             if (rs) streams.set(id, { stream: rs, name: participant.name, isLocal: false, kind: 'iso' });
           }
         }
-        if (streams.size === 0) return;
+        if (signal.aborted || streams.size === 0) return;
+        // A stream track exists before its canvas delivers frames. Verify the
+        // real capture before creating a take folder or inviting contributors.
+        if (programSource && !(await waitForProgramFrames(signal))) {
+          send({ type: 'recording-countdown', payload: { seconds: 0, cancelled: true } });
+          if (!signal.aborted) addToast('The program video timed out. Try recording again.', 'error');
+          return;
+        }
         const recordingSessionId = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         const plannedProgram = [...streams.values()].map(track => ({
           participantName: 'Program', label: track.name, kind: track.kind ?? 'program', origin: 'program' as const,
@@ -4121,11 +4148,17 @@ export function StudioRoom() {
         const folderTake = startCheck.folderReady
           ? await recordingWorkflowRef.current.beginTake(recordingSessionId, myParticipant.name, [...plannedProgram, ...plannedHost])
           : null;
+        if (signal.aborted) {
+          if (folderTake) recordingWorkflowRef.current.endTake(recordingSessionId);
+          send({ type: 'recording-countdown', payload: { seconds: 0, cancelled: true } });
+          return;
+        }
         if (!folderTake && recordingWorkflowRef.current.destination.status === 'none') {
           addToast('Recording to browser storage. Choose a recording folder in Recordings to record straight to your SSD.', 'info');
         }
         const uploadProgram = !folderTake || recordingWorkflowRef.current.cloudUploadPreferred;
         const mediaHttpUrl = uploadProgram && roomId && mediaServerHealth.status !== 'unavailable' ? resolveMediaHttpUrl() : '';
+        releaseProgramSource = undefined; // The recorder now owns the source.
         const started = startRecording(streams, {
           ...(folderTake ? { storage: folderTake.program, onCaptureStarted: folderTake.noteProgramCaptureStart } : {}),
           progressiveUpload: mediaHttpUrl && roomId
@@ -4168,7 +4201,16 @@ export function StudioRoom() {
           },
         });
       }
-    } finally { recordingActionRef.current = false; setProgramRecordingFinalizing(false); }
+    } finally {
+      releaseProgramSource?.();
+      if (programRecordingStart) {
+        programRecordingStart.abort();
+        programRecordingStartRef.current = null;
+        setProgramRecordingPreparing(false);
+      }
+      recordingActionRef.current = false;
+      setProgramRecordingFinalizing(false);
+    }
   };
 
   // Local recording (separate on-stage tracks)
@@ -6629,10 +6671,7 @@ export function StudioRoom() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || event.defaultPrevented) return;
       if (event.key === 'Escape') {
-        if (recordingCountdownCancelRef.current) {
-          recordingCountdownCancelRef.current();
-          return;
-        }
+        if (cancelRecordingStart()) return;
         setShowShortcutHelp(false);
         // Confirmations and other dialogs handle their own Escape first.
         if (!document.querySelector('[data-confirm-dialog]')) closeToolPanels();
@@ -6647,7 +6686,7 @@ export function StudioRoom() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [closeToolPanels, roleShortcuts]);
+  }, [cancelRecordingStart, closeToolPanels, roleShortcuts]);
 
   // The stage owner (the host, or the first co-host while no host is in) tells
   // guests what is on stage. Each slide or image is uploaded once as a small
@@ -7738,7 +7777,7 @@ export function StudioRoom() {
             <div className="studio-recording-countdown" role="status" aria-live="assertive">
               <span className="studio-recording-countdown-number">{recordingCountdown}</span>
               <span className="studio-recording-countdown-label">Recording starts</span>
-              <button type="button" onClick={() => recordingCountdownCancelRef.current?.()}>Cancel</button>
+              <button type="button" onClick={cancelRecordingStart}>Cancel</button>
             </div>
           )}
           {recordingCountdown === null && remoteRecordingCountdown !== null && (
