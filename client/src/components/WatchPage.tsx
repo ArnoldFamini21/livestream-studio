@@ -9,7 +9,7 @@ import { WatchCaptions } from './WatchCaptions.tsx';
 import { readWatchPlaybackTime } from '../utils/watchCaptions.ts';
 import { ReactionOverlay, createFloatingReaction, REACTION_OVERLAY_DURATION_MS, type FloatingReaction } from './ReactionOverlay.tsx';
 import { captureWatchInvite, isWatchAccess, readWatchAccess, readWatchInvite, saveWatchAccess, type WatchAccess } from '../utils/watchAccess.ts';
-import type { ViewerReactionType } from '@studio/shared';
+import type { PremiereStatus, ViewerReactionType } from '@studio/shared';
 import { ApiRequestError, requestJson, resolveMediaHttpUrl } from '../utils/apiClient.ts';
 import { canonicalWatchPath, looksLikeReplacedWatchLink, pollWatchStatus, type WatchStatus } from '../utils/watchStatus.ts';
 import { HlsRecoveryPolicy } from '../utils/hlsRecovery.ts';
@@ -29,6 +29,7 @@ interface WatchRoom {
   name: string;
   hostName?: string;
   scheduledFor?: string;
+  premiere?: true;
   registration?: { enabled: boolean; inviteOnly?: true };
 }
 
@@ -53,6 +54,8 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
   const [room, setRoom] = useState<WatchRoom | null>(null);
   const [roomError, setRoomError] = useState<'missing' | 'failed' | null>(null);
   const [status, setStatus] = useState<WatchStatus | null>(null);
+  const [premiere, setPremiere] = useState<PremiereStatus | null>(null);
+  const premiereClock = useRef(0);
   const [retry, setRetry] = useState(0);
   const [captionsAvailable, setCaptionsAvailable] = useState(false);
   const [statusFailed, setStatusFailed] = useState(false);
@@ -132,6 +135,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
     saveWatchAccess(roomId, null);
     saveWatchAccess(watchId, null);
     setStatus(null);
+    setPremiere(null);
     setWasLive(false);
   }, [roomId, watchId]);
 
@@ -156,6 +160,64 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
       else setStatusFailed(true);
     });
   }, [ready, mediaHttpUrl, watchId, retry, watchAccessToken, clearWatchAccess]);
+
+  const premiereEligible = ready && Boolean(watchAccessToken && room?.registration?.inviteOnly && room.premiere && room.scheduledFor);
+  useEffect(() => {
+    if (!premiereEligible || !mediaHttpUrl || !watchAccessToken) return;
+    const url = new URL(`${mediaHttpUrl}/premieres/${encodeURIComponent(watchId)}/status`);
+    url.searchParams.set('watchToken', watchAccessToken);
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const check = async () => {
+      let delay = 30_000;
+      try {
+        const started = Date.now();
+        const response = await fetch(url, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) });
+        if (response.status === 401) { clearWatchAccess(); return; }
+        if (!response.ok) throw new Error('Premiere status is unavailable');
+        const next = await response.json() as PremiereStatus;
+        premiereClock.current = next.serverTime - (started + Date.now()) / 2;
+        setPremiere(next);
+        if (next.phase === 'ended') return;
+        if (next.phase === 'playing') delay = Math.min(5_000, Math.max(250, next.startsAt! + next.durationMs! - next.serverTime));
+        if (next.phase === 'scheduled') delay = Math.min(30_000, Math.max(250, next.startsAt! - next.serverTime));
+      } catch { /* A normal scheduled show has no premiere. Continue checking for live HLS. */ }
+      if (!controller.signal.aborted) timer = window.setTimeout(check, delay);
+    };
+    void check();
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [clearWatchAccess, mediaHttpUrl, premiereEligible, retry, watchAccessToken, watchId]);
+
+  const premiereLive = premiereEligible && premiere?.phase === 'playing' && !status?.live;
+  const premiereUrl = premiereLive ? `${mediaHttpUrl}/premieres/${encodeURIComponent(watchId)}/video?watchToken=${encodeURIComponent(watchAccessToken || '')}` : '';
+  const premiereStart = premiere?.startsAt;
+  const seekToPremiere = useCallback((video: HTMLVideoElement) => {
+    if (premiereStart && Number.isFinite(video.duration)) {
+      video.currentTime = Math.min(Math.max(0, video.duration - 0.1), Math.max(0, (Date.now() + premiereClock.current - premiereStart) / 1000));
+    }
+  }, [premiereStart]);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !premiereUrl || !premiereStart) return;
+    let active = true;
+    setNeedsTap(false);
+    setPlayerError('');
+    const play = () => {
+      seekToPremiere(video);
+      void video.play().catch(() => { if (active) setNeedsTap(true); });
+    };
+    const fail = () => setPlayerError('The premiere could not play. Please retry.');
+    video.addEventListener('loadedmetadata', play, { once: true });
+    video.addEventListener('error', fail);
+    video.src = premiereUrl;
+    return () => {
+      active = false;
+      video.removeEventListener('loadedmetadata', play);
+      video.removeEventListener('error', fail);
+      video.removeAttribute('src');
+      video.load();
+    };
+  }, [premiereStart, premiereUrl, retry, seekToPremiere]);
 
   const playlistUrl = ready && status?.live && status.playlistPath ? `${mediaHttpUrl}${status.playlistPath}` : '';
 
@@ -274,8 +336,8 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
 
   const title = room?.name || 'Live broadcast';
   const schedule = formatSchedule(room?.scheduledFor);
-  const live = ready && Boolean(status?.live);
-  const ended = !live && wasLive;
+  const live = ready && Boolean(status?.live || premiereLive);
+  const ended = !live && (wasLive || premiereEligible && premiere?.phase === 'ended');
 
   return (
     <div className="watch-page">
@@ -326,10 +388,12 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
               <video ref={videoRef} playsInline controls={live} muted={false} aria-hidden={!live} aria-label={`${title} live video`} />
               {!live && (
                 <div className="watch-placeholder">
-                  {statusFailed ? (
-                    <><h2>Connection interrupted</h2><p>Trying to reconnect to the broadcast…</p></>
-                  ) : ended ? (
+                  {ended ? (
                     <><h2>This broadcast has ended</h2><p>Thank you for watching.</p></>
+                  ) : premiereEligible && premiere?.phase === 'scheduled' ? (
+                    <><h2>Premiere starts soon</h2><p>Scheduled for {schedule}. The video starts automatically.</p></>
+                  ) : statusFailed ? (
+                    <><h2>Connection interrupted</h2><p>Trying to reconnect to the broadcast…</p></>
                   ) : !room || status === null ? (
                     <><h2>Connecting…</h2><p>Checking whether the broadcast is live.</p></>
                   ) : (
@@ -338,11 +402,16 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
                 </div>
               )}
               {live && playerError && <div className="watch-placeholder" role="alert"><p>{playerError}</p><button type="button" onClick={() => setRetry((value) => value + 1)}>Retry playback</button></div>}
-              {live && statusFailed && <p className="watch-error" role="status">Connection interrupted. Reconnecting…</p>}
+              {live && statusFailed && !premiereLive && <p className="watch-error" role="status">Connection interrupted. Reconnecting…</p>}
               <ReactionOverlay reactions={floatingReactions} />
               {live && captionsAvailable && <WatchCaptions watchId={watchId} watchAccessToken={watchAccessToken} readPlaybackTime={getWatchPlaybackTime} />}
               {live && needsTap && !playerError && (
-                <button type="button" className="watch-tap" onClick={() => videoRef.current?.play().then(() => setNeedsTap(false)).catch(() => undefined)}>
+                <button type="button" className="watch-tap" onClick={() => {
+                  const video = videoRef.current;
+                  if (!video) return;
+                  if (premiereLive) seekToPremiere(video);
+                  void video.play().then(() => setNeedsTap(false)).catch(() => undefined);
+                }}>
                   Tap to play
                 </button>
               )}

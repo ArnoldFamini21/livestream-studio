@@ -90,6 +90,7 @@ services:
       RECORDING_STORAGE_FORCE_PATH_STYLE: ${RECORDING_STORAGE_FORCE_PATH_STYLE:-true}
       RECORDING_STORAGE_PREFIX: ${RECORDING_STORAGE_PREFIX:-livestream-studio}
       RECORDING_STORAGE_PUBLIC_BASE_URL: ${RECORDING_STORAGE_PUBLIC_BASE_URL:-}
+      PREMIERE_STORAGE_PRIVATE: ${PREMIERE_STORAGE_PRIVATE:-false}
     volumes: *workspace-volumes
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3002/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]

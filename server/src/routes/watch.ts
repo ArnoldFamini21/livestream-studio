@@ -30,6 +30,7 @@ watchRouter.get('/:watchId', (req, res) => {
     status: room.status,
     hostName: room.hostName,
     scheduledFor: room.scheduledFor,
+    ...(room.premiere ? { premiere: true } : {}),
     registration: room.registration,
   });
 });

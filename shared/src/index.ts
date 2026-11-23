@@ -3,6 +3,7 @@ export * from './chatOverlay.js';
 export * from './viewerChat.js';
 export * from './watchEvents.js';
 export * from './productionRundown.js';
+export * from './premieres.js';
 import type { ProductionRundown, ProductionRundownStateMessage, ProductionRundownUpdate } from './productionRundown.js';
 import type { WatchEventState } from './watchEvents.js';
 import type { ChatOverlayState, ChatOverlayUpdatePayload, ChatOverlayUpdatedPayload } from './chatOverlay.js';
@@ -19,6 +20,7 @@ export interface Room {
   status: RoomStatus;
   settings: RoomSettings;
   scheduledFor?: string;
+  premiere?: true;
   hostName?: string;
   registration?: RoomRegistrationSettings;
 }

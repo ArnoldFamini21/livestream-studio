@@ -642,6 +642,26 @@ program. Both broadcast orientations use the same opening or closing.
 During automation the program excludes stage microphone and screen inputs.
 The media bus still carries the clip and other studio media.
 
+## Private prerecorded premieres
+
+Schedule a studio with **Require a private viewing link**, then choose **Set up
+premiere** before entering the studio. Upload one H.264 MP4 with AAC audio, up to
+256 MB and two hours. When storage confirms the upload, copy the private watch
+link. The premiere must start in the next six days and 22 hours so the seven-day
+watch invitation covers the entire playback window. The watch page uses the
+server clock and joins at the current playback position. The host can stay
+offline. Playback runs on the private watch page.
+
+Premieres require Postgres for room snapshots and S3-compatible object storage
+with public access disabled, Range GET, and conditional PUT support. Set
+`PREMIERE_STORAGE_PRIVATE=true` on the media service and leave
+`RECORDING_STORAGE_PUBLIC_BASE_URL` empty. The existing recording storage
+credentials must be able to read, write and delete under the premiere prefix.
+For Amazon S3 the credentials also need `s3:ListBucket` for the applicable
+prefix so storage can distinguish a missing manifest from denied access.
+Keep any storage lifecycle policy consistent with your desired retention of
+scheduled video and manifests.
+
 ## Physical recording sync check
 
 Record a dark target with a bright center and a 1 kHz tone source in front of

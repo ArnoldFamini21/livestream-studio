@@ -94,6 +94,7 @@ import {
   type RoomSnapshot,
   type RoomSnapshotStore,
 } from './roomPersistence.js';
+import { PREMIERE_MAX_DURATION_MS, WATCH_INVITE_TTL_MS, type PremiereUploadClaims } from '@studio/shared';
 import {
   PasswordAttemptLimiter,
   SocketsPerIpLimiter,
@@ -545,10 +546,18 @@ export class RoomRegistrationError extends Error {
 function getRoomIdleReferenceMs(roomState: RoomState): number {
   const createdAtMs = Date.parse(roomState.room.createdAt);
   const created = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+  const premiereEnd = premiereWindowEnd(roomState);
+  if (premiereEnd) return Math.max(created, premiereEnd);
   if (roomState.room.status !== 'scheduled') return created;
 
   const scheduledAtMs = Date.parse(roomState.room.scheduledFor || '');
   return Number.isFinite(scheduledAtMs) ? Math.max(created, scheduledAtMs) : created;
+}
+
+function premiereWindowEnd(roomState: RoomState): number {
+  if (!roomState.room.premiere) return 0;
+  const start = Date.parse(roomState.room.scheduledFor || '');
+  return Number.isFinite(start) ? start + PREMIERE_MAX_DURATION_MS : 0;
 }
 
 function createWatchId(): string {
@@ -768,7 +777,7 @@ function cancelEmptyRoomDeletion(roomId: string, roomState: RoomState) {
 }
 
 function scheduleEmptyRoomDeletion(roomId: string, roomState: RoomState) {
-  if (roomState.room.status === 'scheduled' || roomState.emptyRoomTimer) return;
+  if (roomState.room.status === 'scheduled' || premiereWindowEnd(roomState) > Date.now() || roomState.emptyRoomTimer) return;
 
   roomState.emptyRoomTimer = setTimeout(() => {
     const current = rooms.get(roomId);
@@ -1090,12 +1099,38 @@ function getLiveStreamTokenSecret(): string | null {
 }
 
 function signMediaToken(
-  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims,
+  claims: LiveStreamTokenClaims | RecordingUploadTokenClaims | SfuTokenClaims | SfuMembershipControlClaims | PresentationRenderTokenClaims | PremiereUploadClaims,
   secret: string
 ): string {
   const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
   const signature = createHmac('sha256', secret).update(body).digest('base64url');
   return `${body}.${signature}`;
+}
+
+export async function issuePremiereSetup(roomId: string, hostToken: unknown, now = Date.now()) {
+  const access = getRoomHostAccess(roomId, hostToken);
+  if (access.status !== 'ok') return access;
+  const { room } = access;
+  const startsAt = Date.parse(room.scheduledFor || '');
+  if ((!room.premiere && room.status !== 'scheduled') || room.status === 'ended' || !room.registration?.inviteOnly ||
+      !Number.isFinite(startsAt) || startsAt <= now || startsAt + PREMIERE_MAX_DURATION_MS >= now + WATCH_INVITE_TTL_MS) {
+    return { status: 'ineligible' as const };
+  }
+  const secret = getLiveStreamTokenSecret();
+  if (!secret || !roomSnapshotStore) return { status: 'unavailable' as const };
+  const roomState = rooms.get(roomId);
+  if (!roomState) return { status: 'not_found' as const };
+  room.premiere = true;
+  try { await roomSnapshotStore.saveRoomSnapshot(buildRoomStateSnapshot(roomState)); }
+  catch { return { status: 'unavailable' as const }; }
+  const { watchId } = roomState;
+  return {
+    status: 'ready' as const,
+    watchId,
+    startsAt,
+    uploadToken: signMediaToken({ v: 1, purpose: 'premiere-upload', watchId, startsAt, exp: now + 15 * 60_000 }, secret),
+    invite: issueWatchGrant('watch-invite', watchId, secret, Number.MAX_SAFE_INTEGER, now).token,
+  };
 }
 
 export interface SfuMembershipNotification {
@@ -5565,7 +5600,7 @@ function finalizeDeparture(roomId: string, roomState: RoomState, participantId: 
           payload: { newHostId, newHostName: newHost.participant.name },
         });
       }
-    } else if (roomState.participants.size > 0) {
+    } else if (roomState.participants.size > 0 && premiereWindowEnd(roomState) <= Date.now()) {
       // No co-host to inherit. Never crown a random guest; hold the room
       // for the host to come back, and end it only if they do not.
       clearHostReconnectTimer(roomState);

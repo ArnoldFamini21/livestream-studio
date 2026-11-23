@@ -295,6 +295,7 @@ export function normalizeRoomSnapshot(value: unknown): RoomSnapshot | null {
 
   const hostName = safeText(roomInput.hostName, 50);
   const scheduledFor = safeIsoDate(roomInput.scheduledFor);
+  const registration = normalizeRegistration(roomInput.registration);
   const passwordHash = safeText(input.passwordHash, 256);
   const passwordSalt = safeText(input.passwordSalt, 128);
   const studioBranding = normalizeStudioBranding(input.studioBranding);
@@ -309,8 +310,9 @@ export function normalizeRoomSnapshot(value: unknown): RoomSnapshot | null {
       createdAt,
       status: normalizeRoomStatus(roomInput.status),
       settings: normalizeRoomSettings(roomInput.settings),
-      registration: normalizeRegistration(roomInput.registration),
+      registration,
       ...(scheduledFor ? { scheduledFor } : {}),
+      ...(scheduledFor && registration?.inviteOnly && roomInput.premiere === true ? { premiere: true } : {}),
       ...(hostName ? { hostName } : {}),
     },
     hostToken,

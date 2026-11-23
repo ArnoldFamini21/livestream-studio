@@ -201,6 +201,7 @@ interface SignedObjectStorageRequestInput {
   payloadSha256: string;
   contentType?: string;
   contentLength?: number;
+  ifNoneMatch?: '*';
 }
 
 /** RFC 3986 encoding, as SigV4 canonical query strings require. */
@@ -227,10 +228,11 @@ export function signObjectStorageRequest(
   const credentialScope = `${dateStamp}/${config.region}/s3/aws4_request`;
   const canonicalHeaders = [
     `host:${url.host}`,
+    ...(input.ifNoneMatch ? [`if-none-match:${input.ifNoneMatch}`] : []),
     `x-amz-content-sha256:${input.payloadSha256}`,
     `x-amz-date:${amzDate}`,
   ].join('\n');
-  const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
+  const signedHeaders = input.ifNoneMatch ? 'host;if-none-match;x-amz-content-sha256;x-amz-date' : 'host;x-amz-content-sha256;x-amz-date';
   const canonicalRequest = [
     input.method,
     url.pathname,
@@ -255,6 +257,7 @@ export function signObjectStorageRequest(
       Authorization: `AWS4-HMAC-SHA256 Credential=${config.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
       ...(input.contentLength !== undefined ? { 'Content-Length': String(input.contentLength) } : {}),
       ...(input.contentType ? { 'Content-Type': input.contentType } : {}),
+      ...(input.ifNoneMatch ? { 'If-None-Match': input.ifNoneMatch } : {}),
       'X-Amz-Content-Sha256': input.payloadSha256,
       'X-Amz-Date': amzDate,
     },
@@ -363,11 +366,12 @@ function sendStorageRequest(
       res.on('error', reject);
     });
     req.on('error', reject);
+    req.setTimeout(60_000, () => req.destroy(new Error('Object storage request timed out')));
     if (typeof body === 'string') {
       req.end(body);
     } else if (body) {
       createReadStream(body.filePath, { start: body.start, end: body.end })
-        .on('error', reject)
+        .on('error', error => req.destroy(error))
         .pipe(req);
     } else {
       req.end();
@@ -534,6 +538,24 @@ export async function getObjectStorageText(
   if (response.statusCode === 404) return null;
   assertStorageOk(response, 'read');
   return response.body;
+}
+
+export async function createObjectStorageJson(config: ObjectStorageConfig, key: string, value: unknown): Promise<boolean> {
+  const body = JSON.stringify(value);
+  const response = await sendStorageRequest(signObjectStorageRequest(config, {
+    method: 'PUT', key, payloadSha256: sha256Hex(body),
+    contentType: 'application/json', contentLength: Buffer.byteLength(body), ifNoneMatch: '*',
+  }), 'PUT', body);
+  if (response.statusCode === 412 || response.statusCode === 409) return false;
+  assertStorageOk(response, 'create');
+  return true;
+}
+
+export async function deleteObjectStorageKey(config: ObjectStorageConfig, key: string): Promise<void> {
+  const response = await sendStorageRequest(signObjectStorageRequest(config, {
+    method: 'DELETE', key, payloadSha256: EMPTY_PAYLOAD_SHA256,
+  }), 'DELETE');
+  if (response.statusCode !== 404) assertStorageOk(response, 'delete');
 }
 
 export async function uploadFileToObjectStorage(

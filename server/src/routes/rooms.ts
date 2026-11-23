@@ -7,6 +7,7 @@ import {
   createRoom,
   getRoomRegistrantList,
   getRooms,
+  issuePremiereSetup,
   recoverHostAccess,
   registerRoomGuest,
   RoomQuotaError,
@@ -183,6 +184,18 @@ roomRouter.post('/:id/host-access', (req, res) => {
   }
 
   res.status(403).json({ error: 'A valid private host credential is required.', code: 'HOST_TOKEN_INVALID' });
+});
+
+roomRouter.post('/:id/premiere', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const setup = await issuePremiereSetup(req.params.id, req.get('x-host-token'));
+  switch (setup.status) {
+    case 'not_found': res.status(404).json({ error: 'Studio not found.' }); break;
+    case 'forbidden': res.status(403).json({ error: 'A private host credential is required.' }); break;
+    case 'ineligible': res.status(409).json({ error: 'Choose a scheduled studio with a private viewing link. The premiere must start within the next six days and 22 hours.' }); break;
+    case 'unavailable': res.status(503).json({ error: 'Premieres require durable studio storage.' }); break;
+    case 'ready': res.json({ watchId: setup.watchId, startsAt: setup.startsAt, uploadToken: setup.uploadToken, invite: setup.invite }); break;
+  }
 });
 
 // Register for a webinar-style guest invite. Host/co-host entry is unchanged.
