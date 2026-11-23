@@ -43,6 +43,7 @@ import {
   type ProgressiveUploadTrackCompletion,
 } from '../utils/progressiveRecordingUpload.ts';
 import { reportClientError } from '../utils/clientErrorReporter.ts';
+import { preparePrimaryRecordingRecorder, type PrimaryRecordingRecorder } from '../utils/primaryRecordingRecorder.ts';
 
 /** Audio rate beside a camera or screen track in a local recording. */
 const LOCAL_RECORDING_AUDIO_BITS_PER_SECOND = 256_000;
@@ -78,6 +79,7 @@ export type LocalProgressiveUploadConfig = Pick<
 
 export interface StartLocalRecordingOptions {
   progressiveUpload?: LocalProgressiveUploadConfig;
+  useStreamingEncoder?: boolean;
   /** Opt in to capturing a raw WebCodecs bitstream sidecar alongside playable MediaRecorder video files. */
   enableWebCodecsSidecar?: boolean;
   /** Where track bytes land: the host's recording folder, or browser storage (default). */
@@ -110,7 +112,7 @@ interface TrackRecorder {
   id: string;
   label: string;
   kind: LocalRecordingSource['kind'];
-  recorder: MediaRecorder;
+  recorder: PrimaryRecordingRecorder;
   chunkStore: RecordingTrackStore;
   /** Source id shared by every segment of the source. */
   sourceId: string;
@@ -402,10 +404,14 @@ export function useLocalRecording(roomName = 'Studio') {
     const recorderId = segmentIndex ? `${source.id}-part${segmentIndex + 1}` : source.id;
     const label = segmentIndex ? `${source.label} (part ${segmentIndex + 1})` : source.label;
     let wav: PcmWavRecorder | undefined;
-    let recorder: MediaRecorder;
+    let recorder: PrimaryRecordingRecorder;
     let rawCleanup: (() => void) | undefined;
     const bitsPerSecond = getBitsPerSecondForSource({ ...source, stream });
     let mimeType = '';
+    const startOptions = startOptionsRef.current;
+    const streamingRecorder = startOptions?.useStreamingEncoder && source.kind === 'iso'
+      ? await preparePrimaryRecordingRecorder(stream, bitsPerSecond, LOCAL_RECORDING_AUDIO_BITS_PER_SECOND)
+      : null;
     if (source.format === 'wav') {
       // Lossless mic: prefer an unprocessed capture of the same microphone.
       const raw = await openRawMicrophone(source.rawDeviceId);
@@ -417,6 +423,9 @@ export function useLocalRecording(roomName = 'Studio') {
       // PcmWavRecorder implements the MediaRecorder surface used below.
       recorder = wav as unknown as MediaRecorder;
       mimeType = wav.mimeType;
+    } else if (streamingRecorder) {
+      recorder = streamingRecorder;
+      mimeType = recorder.mimeType;
     } else {
       mimeType = getMimeTypeForSource({ ...source, stream });
       if (!mimeType) {
@@ -433,7 +442,6 @@ export function useLocalRecording(roomName = 'Studio') {
         ...(hasAudio ? { audioBitsPerSecond: hasVideo ? LOCAL_RECORDING_AUDIO_BITS_PER_SECOND : bitsPerSecond } : {}),
       });
     }
-    const startOptions = startOptionsRef.current;
     const chunkStore = (startOptions?.storage || browserRecordingTrackStoreFactory)({
       roomName,
       label,
@@ -471,7 +479,11 @@ export function useLocalRecording(roomName = 'Studio') {
       startedAt: new Date().toISOString(),
       encoder: wav
         ? { pipeline: 'media-recorder', container: 'browser', codec: `pcm_s${wav.format.bitsPerSample}le`, fallbackReason: 'Lossless 48 kHz PCM captured with an AudioWorklet.' }
-        : getEncoderMetadataForSource(stream, mimeType, bitsPerSecond),
+        : streamingRecorder
+          ? streamingRecorder.mimeType.startsWith('video/mp4')
+            ? { pipeline: 'webcodecs', container: 'mp4', codec: 'h264' }
+            : { pipeline: 'webcodecs', container: 'webm', codec: 'vp9' }
+          : getEncoderMetadataForSource(stream, mimeType, bitsPerSecond),
     });
 
     recorder.ondataavailable = (event) => chunkStore.append(event.data);

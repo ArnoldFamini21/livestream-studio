@@ -59,7 +59,8 @@ import type { PeerBandwidthHealth } from '../utils/webrtcBandwidthAdaptation.ts'
 import { SfuSocketSession } from '../utils/sfuSocket.ts';
 import { getSfuSessionParticipantId, mergeSfuMediaWithMeshFallback, shouldUseSeparateScreenShare, type SfuTransportStatus } from '../utils/sfuRuntime.ts';
 import { useVirtualBackground, type VirtualBackgroundConfig } from '../hooks/useVirtualBackground.ts';
-import { useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
+import { PROGRAM_AUDIO_BITS_PER_SECOND, PROGRAM_VIDEO_BITS_PER_SECOND, useRecording, type RecordingStreamInput } from '../hooks/useRecording.ts';
+import { preparePrimaryRecordingRecorder, useStreamingPrimaryRecording } from '../utils/primaryRecordingRecorder.ts';
 import { useScreenShare } from '../hooks/useScreenShare.ts';
 import { useLocalRecording, type LocalRecordingSource } from '../hooks/useLocalRecording.ts';
 import { useRecordingWorkflow } from '../hooks/useRecordingWorkflow.ts';
@@ -4086,12 +4087,16 @@ export function StudioRoom() {
         });
 
         if (programSource) {
+          const recorder = useStreamingPrimaryRecording
+            ? await preparePrimaryRecordingRecorder(programSource.stream, PROGRAM_VIDEO_BITS_PER_SECOND, PROGRAM_AUDIO_BITS_PER_SECOND)
+            : null;
           streams.set(programSource.id, {
             stream: programSource.stream,
             name: programSource.label,
             isLocal: true,
             kind: programSource.kind,
             cleanup: programSource.cleanup,
+            ...(recorder ? { recorder } : {}),
           });
         } else {
           if (localStream && myParticipant.status === 'on-stage') {
@@ -4726,6 +4731,7 @@ export function StudioRoom() {
     }
     participantRecordingPlanRef.current = { ...plan, sessionId, hostFolderTake: Boolean(hostTake), lossless };
     void startParticipantLocalRecording(sources, null, {
+      useStreamingEncoder: useStreamingPrimaryRecording,
       progressiveUpload: plan.progressiveUpload ? progressiveUpload : undefined,
       ...(hostTake ? { storage: hostTake.forParticipant(myParticipant.name) } : {}),
       // Tags the browser backup so it can resume to the host after a reload.

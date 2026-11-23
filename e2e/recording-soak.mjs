@@ -25,7 +25,13 @@ const useH264Fallback = process.env.SOAK_COMPARE_H264 === "1";
 assert.ok(!useVp8Fallback || !useH264Fallback, "Select only one encoder comparison");
 assert.ok(!qualification || (!useVp8Fallback && !useH264Fallback), "Qualification must use the product's own encoder selection");
 const h264MimeType = useH264Fallback ? "video/mp4;codecs=avc1,mp4a.40.2" : null;
-const encoderProfile = useVp8Fallback ? "vp8-fallback" : h264MimeType ? "h264-aac-fallback" : "studio-default";
+const expectWebCodecsH264 = process.env.VITE_RECORDING_ENCODER === "webcodecs-h264";
+const expectWebCodecs = expectWebCodecsH264 || process.env.SOAK_EXPECT_WEBCODECS === "1" || process.env.VITE_RECORDING_ENCODER === "webcodecs";
+assert.ok(!expectWebCodecs || (!useVp8Fallback && !useH264Fallback), "Encoder comparisons require native MediaRecorder");
+const encoderProfile = expectWebCodecsH264 ? "studio-webcodecs-h264"
+  : expectWebCodecs ? "studio-webcodecs"
+  : useVp8Fallback ? "vp8-fallback"
+  : h264MimeType ? "h264-aac-fallback" : "studio-default";
 const result = { qualification, requestedSeconds, cameraPreset: "720p", encoderProfile, startedAt: new Date().toISOString(), passed: false, reconnect: null, tracks: [], errors: [] };
 await mkdir(path.join(artifactDir, "received"), { recursive: true });
 const seatNames = ["Soak Host", "Soak Guest A", "Soak Guest B"];
@@ -46,6 +52,79 @@ function installObserver({ folder, useVp8Fallback, h264MimeType }) {
   // The program remains the production 1920x1080 compositor output.
   try { sessionStorage.setItem("preferredVideoQuality", "720p"); } catch { /* storage unavailable */ }
   const state = window.__soak = { recorders: [], channels: [], sockets: [], peers: new Map(), errors: [], transferSignals: [] };
+  function attachRecorder(recorder, stream, pipeline) {
+    const tracks = stream.getTracks();
+    const row = {
+      id: state.recorders.length,
+      mimeType: recorder.mimeType,
+      pipeline,
+      kinds: tracks.map(track => track.kind),
+      settings: tracks.map(track => {
+        const { width, height, frameRate, sampleRate, channelCount } = track.getSettings();
+        return { kind: track.kind, ...(track.kind === "video" ? { trackId: track.id } : {}), width, height, frameRate, sampleRate, channelCount };
+      }),
+      startRequested: null,
+      started: null,
+      firstChunkDispatchedAt: null,
+      lastChunkDispatchedAt: null,
+      stopRequested: null,
+      stopped: null,
+      chunks: 0,
+      bytes: 0,
+      peakHashQueueBytes: 0,
+      largestChunkDispatchGapMs: 0,
+      largestChunkDispatchGapStartedAtMs: null,
+      flushed: false,
+      chunkChecksums: [],
+    };
+    state.recorders.push(row);
+    recorder.addEventListener("error", event => state.errors.push(`Recorder ${row.id}: ${event.error?.message || event.message || "error"}`));
+    let hashing = Promise.resolve();
+    let pendingHashBytes = 0;
+    recorder.addEventListener("start", () => { row.started = performance.now(); });
+    recorder.addEventListener("dataavailable", ({ data }) => {
+      if (!data.size) return;
+      row.chunks += 1;
+      row.bytes += data.size;
+      const at = performance.now();
+      row.firstChunkDispatchedAt ??= at;
+      if (row.lastChunkDispatchedAt !== null && at - row.lastChunkDispatchedAt > row.largestChunkDispatchGapMs) {
+        row.largestChunkDispatchGapMs = at - row.lastChunkDispatchedAt;
+        row.largestChunkDispatchGapStartedAtMs = row.lastChunkDispatchedAt;
+      }
+      row.lastChunkDispatchedAt = at;
+      pendingHashBytes += data.size;
+      row.peakHashQueueBytes = Math.max(row.peakHashQueueBytes, pendingHashBytes);
+      // Only one original capture chunk per recorder is read at a time.
+      // Native hashing avoids sending the media itself through Playwright.
+      hashing = hashing.then(async () => {
+        const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await data.arrayBuffer()));
+        const sha256 = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+        row.chunkChecksums.push({ bytes: data.size, sha256 });
+      }).catch(error => state.errors.push(String(error))).finally(() => { pendingHashBytes -= data.size; });
+    });
+    recorder.addEventListener("stop", () => {
+      row.stopped = performance.now();
+      void hashing.then(() => { row.flushed = true; });
+    });
+
+    const start = recorder.start;
+    recorder.start = function (...args) {
+      row.startRequested = performance.now();
+      const program = row.settings.some(track => track.kind === "video" && track.width === 1920 && track.height === 1080);
+      if (program) {
+        const lastPaint = window.__captureResources?.programCanvases[0]?.lastFrameAtMs;
+        row.programPaintAgeAtStartMs = typeof lastPaint === "number" ? row.startRequested - lastPaint : null;
+      }
+      return start.apply(this, args);
+    };
+    const stop = recorder.stop;
+    recorder.stop = function (...args) {
+      row.stopRequested = performance.now();
+      return stop.apply(this, args);
+    };
+  }
+
   const nativeRecorder = window.MediaRecorder;
   window.MediaRecorder = class extends nativeRecorder {
     static isTypeSupported(mimeType) {
@@ -53,81 +132,14 @@ function installObserver({ folder, useVp8Fallback, h264MimeType }) {
       if (h264MimeType && mimeType.startsWith("video/") && mimeType !== h264MimeType) return false;
       return super.isTypeSupported(mimeType);
     }
-    constructor(...args) {
-      super(...args);
-      const tracks = args[0].getTracks();
-      const row = {
-        id: state.recorders.length,
-        mimeType: this.mimeType,
-        kinds: tracks.map(track => track.kind),
-        settings: tracks.map(track => {
-          const { width, height, frameRate, sampleRate, channelCount } = track.getSettings();
-          return { kind: track.kind, ...(track.kind === "video" ? { trackId: track.id } : {}), width, height, frameRate, sampleRate, channelCount };
-        }),
-        startRequested: null,
-        started: null,
-        firstChunkDispatchedAt: null,
-        lastChunkDispatchedAt: null,
-        stopRequested: null,
-        stopped: null,
-        chunks: 0,
-        bytes: 0,
-        peakHashQueueBytes: 0,
-        largestChunkDispatchGapMs: 0,
-        largestChunkDispatchGapStartedAtMs: null,
-        flushed: false,
-        chunkChecksums: [],
-      };
-      state.recorders.push(row);
-      this.__soakRecorderId = row.id;
-      this.addEventListener("error", event => state.errors.push(`Recorder ${row.id}: ${event.error?.message || "error"}`));
-      let hashing = Promise.resolve();
-      let pendingHashBytes = 0;
-      this.addEventListener("start", () => { row.started = performance.now(); });
-      this.addEventListener("dataavailable", ({ data }) => {
-        if (!data.size) return;
-        row.chunks += 1;
-        row.bytes += data.size;
-        const at = performance.now();
-        row.firstChunkDispatchedAt ??= at;
-        if (row.lastChunkDispatchedAt !== null && at - row.lastChunkDispatchedAt > row.largestChunkDispatchGapMs) {
-          row.largestChunkDispatchGapMs = at - row.lastChunkDispatchedAt;
-          row.largestChunkDispatchGapStartedAtMs = row.lastChunkDispatchedAt;
-        }
-        row.lastChunkDispatchedAt = at;
-        pendingHashBytes += data.size;
-        row.peakHashQueueBytes = Math.max(row.peakHashQueueBytes, pendingHashBytes);
-        // Only one original MediaRecorder chunk per recorder is read at a time.
-        // Native hashing avoids sending the media itself through Playwright.
-        hashing = hashing.then(async () => {
-          const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await data.arrayBuffer()));
-          const sha256 = Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
-          row.chunkChecksums.push({ bytes: data.size, sha256 });
-        }).catch(error => state.errors.push(String(error))).finally(() => { pendingHashBytes -= data.size; });
-      });
-      this.addEventListener("stop", () => {
-        row.stopped = performance.now();
-        void hashing.then(() => { row.flushed = true; });
-      });
-    }
-    start(...args) {
-      const row = state.recorders[this.__soakRecorderId];
-      if (row) {
-        row.startRequested = performance.now();
-        const program = row.settings.some(track => track.kind === "video" && track.width === 1920 && track.height === 1080);
-        if (program) {
-          const lastPaint = window.__captureResources?.programCanvases[0]?.lastFrameAtMs;
-          row.programPaintAgeAtStartMs = typeof lastPaint === "number" ? row.startRequested - lastPaint : null;
-        }
-      }
-      return super.start(...args);
-    }
-    stop() {
-      const row = state.recorders[this.__soakRecorderId];
-      if (row) row.stopRequested = performance.now();
-      return super.stop();
+    constructor(stream, ...args) {
+      super(stream, ...args);
+      attachRecorder(this, stream, "media-recorder");
     }
   };
+  window.addEventListener("studio-recording-recorder", ({ detail: { recorder, stream } }) => {
+    attachRecorder(recorder, stream, "webcodecs");
+  });
   const nativeSocket = window.WebSocket;
   window.WebSocket = class extends nativeSocket {
     constructor(...args) {
@@ -281,6 +293,18 @@ try {
   progressTimer = setInterval(() => console.log(JSON.stringify({ event: "recording-progress", elapsedSeconds: Math.round((Date.now() - captureStarted) / 1000), requestedSeconds })), 30_000);
   console.log(JSON.stringify({ event: "recording-started", qualification, requestedSeconds, artifactDir }));
 
+  if (expectWebCodecs) {
+    const captures = await host.waitForFunction(() => {
+      const video = window.__soak.recorders.filter(row => row.kinds.includes("video") && row.started !== null);
+      if (video.length !== 2 || video.some(row => row.chunks < 2 || row.stopped !== null)) return null;
+      return video.map(({ mimeType, pipeline, chunks }) => ({ mimeType, pipeline, chunks }));
+    }, undefined, { timeout: 15_000, polling: 500 });
+    result.liveWebCodecsRecorders = await captures.jsonValue();
+    await captures.dispose();
+    assert.ok(result.liveWebCodecsRecorders.every(row => row.pipeline === "webcodecs"), "The host program and ISO must use the studio WebCodecs encoder");
+    console.log(JSON.stringify({ event: "incremental-webcodecs-video-confirmed", tracks: result.liveWebCodecsRecorders }));
+  }
+
   if (h264MimeType) {
     // Support alone is insufficient if the MP4 recorder buffers video until Stop.
     await Promise.all(pages.map((page, index) => page.waitForFunction(expectedCount => {
@@ -337,8 +361,8 @@ try {
   console.log(JSON.stringify({ event: "waiting-for-source-checksums" }));
   await Promise.all(pages.map(page => page.waitForFunction(() => window.__soak.recorders.every(row => row.started === null || (row.stopped !== null && row.flushed)), undefined, { timeout: 120_000, polling: 500 })));
   const sourceCaptures = (await Promise.all(pages.map((page, index) => page.evaluate(name =>
-    window.__soak.recorders.filter(row => row.chunks > 0).map(({ id, mimeType, kinds, bytes, chunks, chunkChecksums }) => ({
-      name, id, mimeType, kinds, bytes, chunks, chunkChecksums,
+    window.__soak.recorders.filter(row => row.chunks > 0).map(({ id, mimeType, pipeline, kinds, bytes, chunks, chunkChecksums }) => ({
+      name, id, mimeType, pipeline, kinds, bytes, chunks, chunkChecksums,
     })), seatNames[index])))).flat();
   for (const source of sourceCaptures) {
     assert.equal(source.chunkChecksums.length, source.chunks, `${source.name} recorder ${source.id}: every chunk was hashed`);
@@ -373,7 +397,9 @@ try {
   }), seatNames[index])));
   result.diagnostics = diagnostics;
   assert.ok(diagnostics[0].channels.filter(row => row.label === "rec-transfer").reduce((sum, row) => sum + row.receivedBytes, 0) > 1_000_000, "host received recording bytes through real RTC data channels");
-  assert.deepEqual(diagnostics.flatMap(item => item.errors), [], "passive source checksum capture succeeded");
+  for (const { participant, errors } of diagnostics) {
+    result.errors.push(...errors.map(error => `${participant} recording: ${error}`));
+  }
   console.log(JSON.stringify({ event: "checking-recorded-packets", tracks: manifest.tracks.length }));
   for (const track of manifest.tracks) {
     assert.ok(track.bytes > 0, `${track.label} is non-empty`);
@@ -390,15 +416,21 @@ try {
         break;
       }
     }
-    assert.ok(matching, `${track.label} is byte-identical to its original MediaRecorder chunks`);
+    assert.ok(matching, `${track.label} is byte-identical to its original recorder chunks`);
     // Capture runs an extra half second to allow endpoint packet quantization;
     // every encoded stream still must cover the full requested duration.
-    const evidence = { ...track, file, sha256: digest, source: { participant: matching.name, recorder: matching.id, bytes: matching.bytes } };
+    const evidence = {
+      ...track, file, sha256: digest,
+      source: { participant: matching.name, recorder: matching.id, pipeline: matching.pipeline, bytes: matching.bytes },
+    };
+    if (expectWebCodecs && (track.origin === "program" || (track.origin === "host" && track.kind === "iso"))) {
+      assert.equal(matching.pipeline, "webcodecs", `${track.label} must be captured with the studio WebCodecs encoder`);
+    }
     try {
       const expectedVideoSize = track.origin === "program" ? { width: 1920, height: 1080 }
         : track.kind === "iso" ? { width: 1280, height: 720 } : undefined;
       evidence.metrics = await probeRecording(file, { minimumSeconds: requestedSeconds, expectedVideoSize });
-      if (expectedVideoSize && h264MimeType) {
+      if (expectedVideoSize && (h264MimeType || expectWebCodecsH264 && matching.pipeline === "webcodecs")) {
         assert.equal(evidence.metrics.timelines.find(stream => stream.kind === "video")?.codec, "h264", "Encoded H.264 video");
         assert.equal(evidence.metrics.timelines.find(stream => stream.kind === "audio")?.codec, "aac", "Encoded AAC audio");
       }
@@ -417,7 +449,7 @@ try {
   }
   assert.deepEqual(harness.pageErrors, [], "no browser application errors during soak");
   assert.deepEqual(harness.cspViolations, [], "no CSP violations during soak");
-  assert.equal(result.errors.length, 0, "Every track must pass packet integrity checks; see per-track evidence");
+  assert.equal(result.errors.length, 0, "Every recorder and track must pass capture and packet integrity checks; see per-track evidence");
   result.passed = true;
   result.completedAt = new Date().toISOString();
   console.log(JSON.stringify({ event: "recording-soak-complete", qualification, tracks: result.tracks.length, artifactDir }));

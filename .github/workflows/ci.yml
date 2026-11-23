@@ -10,6 +10,18 @@ on:
         description: Run three-participant recording qualification (35-second preflight, then two twenty-minute takes)
         type: boolean
         default: false
+      recording_encoder:
+        description: Recording encoder to exercise in the isolated soak build
+        type: choice
+        default: browser
+        options:
+          - browser
+          - webcodecs
+          - webcodecs-h264
+      recording_preflight_only:
+        description: Run only the 35-second recording preflight
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -140,6 +152,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 65
     env:
+      VITE_RECORDING_ENCODER: ${{ inputs.recording_encoder }}
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/playwright
       VITE_API_URL: http://localhost:3001
       VITE_WS_URL: ws://localhost:3001/ws
@@ -195,7 +208,7 @@ jobs:
         id: recording_qualification
         # Keep the short-run result and collect long-run evidence even if the
         # preflight failed a packet timing assertion.
-        if: ${{ !cancelled() && (steps.recording_preflight.outcome == 'success' || steps.recording_preflight.outcome == 'failure') }}
+        if: ${{ !cancelled() && !inputs.recording_preflight_only && (steps.recording_preflight.outcome == 'success' || steps.recording_preflight.outcome == 'failure') }}
         run: npm run test:recording-soak
         env:
           SOAK_SECONDS: '1200'
