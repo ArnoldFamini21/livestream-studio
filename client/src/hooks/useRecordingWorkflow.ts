@@ -41,6 +41,7 @@ export interface ActiveTakeStorage {
   sessionId: string;
   folder: TakeFolder;
   program: RecordingTrackStoreFactory;
+  noteProgramCaptureStart: (sourceId: string, startedAtMs: number) => void;
   /** The host's own tracks (and other locally recorded tracks) under a person's folder. */
   forParticipant(name: string): RecordingTrackStoreFactory;
 }
@@ -166,6 +167,7 @@ export function useRecordingWorkflow(options: UseRecordingWorkflowOptions) {
       sessionId,
       folder: started.folder,
       program: started.program,
+      noteProgramCaptureStart: started.noteProgramCaptureStart,
       forParticipant: started.forParticipant,
     };
     activeTakesRef.current.set(sessionId, take);
