@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react';
+import type { RecordingRecoveryTake, RecordingRecoveryTrack } from '@studio/shared';
 import { getHostSession } from '../utils/hostSession.ts';
 import { getRecordingFileExtension } from '../utils/recordingMimeTypes.ts';
 import {
   downloadPrivateRecoveryTrack, listPrivateRecoveryTakes, readPrivateRecoveryTake,
-  type PrivateRecoveryReference, type PrivateRecoveryTake, type PrivateRecoveryTrack,
+  type PrivateRecoveryReference,
 } from '../utils/recordingCloudRecovery.ts';
 
 interface SaveFileWindow extends Window {
   showSaveFilePicker?: (options: { suggestedName: string }) => Promise<{ createWritable(): Promise<WritableStream<Uint8Array>> }>;
 }
 
-async function saveVerifiedTrack(reference: PrivateRecoveryReference, track: PrivateRecoveryTrack, hostToken: string) {
+async function saveVerifiedTrack(reference: PrivateRecoveryReference, track: RecordingRecoveryTrack, hostToken: string) {
   const label = track.label.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || 'Recording';
   const filename = `${label}.${getRecordingFileExtension(track.mimeType)}`;
   const picker = (window as SaveFileWindow).showSaveFilePicker;
@@ -32,7 +33,7 @@ async function saveVerifiedTrack(reference: PrivateRecoveryReference, track: Pri
 }
 
 function PrivateRecordingTake({ reference, hostToken }: { reference: PrivateRecoveryReference; hostToken: string }) {
-  const [take, setTake] = useState<PrivateRecoveryTake | null>(null);
+  const [take, setTake] = useState<RecordingRecoveryTake | null>(null);
   const [error, setError] = useState('');
   const [downloading, setDownloading] = useState('');
   const [reload, setReload] = useState(0);
@@ -56,7 +57,7 @@ function PrivateRecordingTake({ reference, hostToken }: { reference: PrivateReco
     return () => { request.abort(); window.clearTimeout(timer); };
   }, [hostToken, reference, reload]);
 
-  const download = async (track: PrivateRecoveryTrack) => {
+  const download = async (track: RecordingRecoveryTrack) => {
     setError('');
     setDownloading(`${track.participantId}:${track.trackId}`);
     try { await saveVerifiedTrack(reference, track, hostToken); }

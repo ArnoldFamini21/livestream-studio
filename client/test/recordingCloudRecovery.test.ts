@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
-import { finalizeRecoverySource, uploadRecoveredTake, type PrivateRecoveryGrant, type PrivateRecoveryTrack } from '../src/utils/recordingCloudRecovery.ts';
+import type { RecordingRecoveryGrant, RecordingRecoveryTrack } from '@studio/shared';
+import { finalizeRecoverySource, uploadRecoveredTake } from '../src/utils/recordingCloudRecovery.ts';
 import { createWavHeader, parseWavHeader, WAV_HEADER_BYTES } from '../src/utils/wavStream.ts';
 
-const grant: PrivateRecoveryGrant = {
+const grant: RecordingRecoveryGrant = {
   roomId: 'room-a', takeId: 'recording-a', participantId: 'guest-a', token: 'local-test-offline-grant', expiresAt: '2099-01-01T00:00:00.000Z',
 };
 const source = { id: 'take-a', label: 'Guest camera', kind: 'iso', blob: new Blob(['abcdef'], { type: 'video/webm' }) };
-const saved: PrivateRecoveryTrack = {
+const saved: RecordingRecoveryTrack = {
   trackId: source.id, participantId: grant.participantId, participantName: 'Guest', label: source.label,
   kind: source.kind, mimeType: source.blob.type, receivedBytes: 3, nextSequence: 1, status: 'uploading',
 };

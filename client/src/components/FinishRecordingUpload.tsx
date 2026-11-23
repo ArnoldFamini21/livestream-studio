@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import type { RecordingRecoveryGrant } from '@studio/shared';
 import { listTransferableRecordings, type TransferableRecording } from '../utils/recordingRecovery.ts';
-import { finalizeRecoverySource, listPrivateRecoveryGrants, uploadRecoveredTake, type PrivateRecoveryGrant } from '../utils/recordingCloudRecovery.ts';
+import { finalizeRecoverySource, listPrivateRecoveryGrants, uploadRecoveredTake } from '../utils/recordingCloudRecovery.ts';
 
 interface PendingTake {
-  grant: PrivateRecoveryGrant;
+  grant: RecordingRecoveryGrant;
   recordings: TransferableRecording[];
 }
 

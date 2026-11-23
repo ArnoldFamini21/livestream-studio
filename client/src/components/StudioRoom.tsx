@@ -3274,10 +3274,12 @@ export function StudioRoom() {
         }
         case 'recording-recovery-state': {
           if (!roomId) break;
-          const { takeId, status, expiresAt } = message.payload;
-          if (status === 'ready' && expiresAt) {
+          const { takeId, status } = message.payload;
+          if (message.payload.status === 'ready') {
+            const { expiresAt } = message.payload;
             const saved = rememberPrivateRecoveryTake({ roomId, takeId, expiresAt, roomName: recoveryRoomName.current });
             if (!saved) addToastRef.current('This browser could not save the private backup in Recordings.', 'warning');
+            else addToastRef.current('Private guest backup is ready for this take.', 'info');
           } else if (status === 'unavailable') addToastRef.current('Private backup is unavailable. Local recording continues.', 'warning');
           break;
         }
