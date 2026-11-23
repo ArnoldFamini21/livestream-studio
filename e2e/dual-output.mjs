@@ -7,7 +7,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 import ffmpegStatic from 'ffmpeg-static';
-import { admitGuest, createStudio, eventually, joinStudio, repoRoot, stageGuest, startHarness } from './harness.mjs';
+import { admitGuest, createStudio, eventually, joinStudio, repoRoot, stageGuest, startHarness, openStudioTool } from './harness.mjs';
 
 /** Opt-in rehearsal with a real Chromium encoder and two local RTMP receivers. */
 const mediaPort = Number(process.env.E2E_DUAL_MEDIA_PORT || 3382);
@@ -108,7 +108,7 @@ test('two independent program layouts send H.264 and AAC to matching RTMP destin
       await run(ffmpeg, ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=red:s=320x180:r=25',
         '-f', 'lavfi', '-i', 'sine=frequency=1100:sample_rate=48000',
         '-t', '4', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', clip], { timeout: 15_000 });
-      await host.getByRole('navigation', { name: 'Studio panels' }).getByRole('button', { name: 'Media', exact: true }).click();
+      await openStudioTool(host, 'Media');
       await host.getByLabel('Upload media files', { exact: true }).setInputFiles(clip);
       await eventually(() => host.getByRole('button', { name: 'Show Show bumper.mp4', exact: true }).isEnabled());
     }

@@ -370,7 +370,7 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
           <section className="watch-card">
             <p className="watch-kicker">{room?.hostName ? `${room.hostName} invites you to` : 'Register to watch'}</p>
             <h1>{title}</h1>
-            {schedule && <p className="watch-schedule">{schedule}</p>}
+            {schedule && <time className="watch-schedule" dateTime={room?.scheduledFor}>{schedule}</time>}
             {room?.registration?.inviteOnly && !privateInvite ? (
               <p>Ask the host for a private viewing link for this event.</p>
             ) : (
@@ -384,20 +384,25 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
           </section>
         ) : (
           <>
+            <div className="watch-details">
+              <h1>{title}</h1>
+              {room?.hostName && <p className="watch-host">Hosted by {room.hostName}</p>}
+              {schedule && !live && !ended && <time className="watch-schedule" dateTime={room?.scheduledFor}>Scheduled for {schedule}</time>}
+            </div>
             <div className={`watch-player${live ? ' is-live' : ''}`}>
               <video ref={videoRef} playsInline controls={live} muted={false} aria-hidden={!live} aria-label={`${title} live video`} />
               {!live && (
                 <div className="watch-placeholder">
                   {ended ? (
-                    <><h2>This broadcast has ended</h2><p>Thank you for watching.</p></>
+                    <h2>This broadcast has ended</h2>
                   ) : premiereEligible && premiere?.phase === 'scheduled' ? (
-                    <><h2>Premiere starts soon</h2><p>Scheduled for {schedule}. The video starts automatically.</p></>
+                    <><h2>Premiere starts soon</h2><p>The video starts automatically.</p></>
                   ) : statusFailed ? (
                     <><h2>Connection interrupted</h2><p>Trying to reconnect to the broadcast…</p></>
                   ) : !room || status === null ? (
-                    <><h2>Connecting…</h2><p>Checking whether the broadcast is live.</p></>
+                    <h2>Connecting…</h2>
                   ) : (
-                    <><h2>Not live yet</h2><p>{schedule ? `Scheduled for ${schedule}. ` : ''}This page starts playing on its own when the host goes live.</p></>
+                    <><h2>Not live yet</h2><p>The video starts when the host goes live.</p></>
                   )}
                 </div>
               )}
@@ -416,13 +421,10 @@ function WatchRoomPage({ roomId }: { roomId: string }) {
                 </button>
               )}
             </div>
-            <section className="watch-details">
-              <h1>{title}</h1>
-              {room?.hostName && <p className="watch-host">Hosted by {room.hostName}</p>}
-              {schedule && !live && !ended && <p className="watch-schedule">{schedule}</p>}
-            </section>
-            {room && !ended && <WatchPollCard watchId={watchId} watchAccessToken={watchAccessToken} />}
-            {room && !ended && <WatchChatPanel watchId={watchId} watchAccessToken={watchAccessToken} registeredName={form.name.trim() || savedName} onFloat={floatReactions} onCaptionsAvailable={setCaptionsAvailable} />}
+            {room && !ended && <div className="watch-audience">
+              <WatchPollCard watchId={watchId} watchAccessToken={watchAccessToken} />
+              <WatchChatPanel watchId={watchId} watchAccessToken={watchAccessToken} registeredName={form.name.trim() || savedName} onFloat={floatReactions} onCaptionsAvailable={setCaptionsAvailable} />
+            </div>}
           </>
         )}
       </main>

@@ -388,17 +388,17 @@ function PersonRow({
                     Notify: you’re next
                   </button>
                 )}
-                {person.status !== 'on-stage' && (
+                {person.status === 'green-room' && (
                   <button type="button" onClick={() => action('move-to-stage')}>
                     Bring on stage
                   </button>
                 )}
-                {person.status !== 'backstage' && (
+                {person.status === 'on-stage' && (
                   <button
                     type="button"
                     onClick={() => action('move-to-backstage')}
                   >
-                    {person.status === 'green-room' ? 'Admit to backstage' : 'Move backstage'}
+                    Move backstage
                   </button>
                 )}
                 {person.status !== 'green-room' && (

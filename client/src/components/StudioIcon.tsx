@@ -14,6 +14,12 @@ const paths: Record<string, React.ReactNode> = {
   close: <path d="m6 6 12 12M6 18 18 6" />,
   more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
   mic: <><rect x="9" y="3" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" /></>,
+  'mic-off': <><path d="M9 9v3a3 3 0 0 0 5.1 2.1M15 10V6a3 3 0 0 0-5.2-2M5 10v2a7 7 0 0 0 11.5 5.4M19 10v2M12 19v3M8 22h8M3 3l18 18" /></>,
+  'video-off': <><path d="M3 8v7a3 3 0 0 0 3 3h8M8 6h4a3 3 0 0 1 3 3v1l6-3v10l-4-2M3 3l18 18" /></>,
+  screen: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M12 16v4m-5 0h10" /></>,
+  chat: <path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-6 4V7a2 2 0 0 1 2-2Z" />,
+  record: <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3" fill="currentColor" /></>,
+  stop: <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />,
 };
 
 export function StudioIcon({ name, style }: { name: string; style?: CSSProperties }) {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
-import { createStudio, eventually, screenshot, startHarness } from './harness.mjs';
+import { createStudio, eventually, screenshot, startHarness, openStudioTool } from './harness.mjs';
 
 test('an invited viewer can register and request to join a private event', { timeout: 110_000 }, async () => {
   const fixture = await startHarness({
@@ -12,7 +12,7 @@ test('an invited viewer can register and request to join a private event', { tim
     const hostContext = await fixture.browser('host');
     const { page: host } = await createStudio(hostContext, { url: fixture.url, privateWatch: true, name: 'Private event rehearsal' });
     pages.set('host', host);
-    await host.getByRole('button', { name: 'Open invite panel', exact: true }).click();
+    await openStudioTool(host, 'Invite guests');
     await host.getByRole('checkbox', { name: /Allow audience call-ins/ }).click();
     await eventually(() => host.getByRole('checkbox', { name: /Allow audience call-ins/ }).isChecked());
     await host.getByRole('button', { name: 'Create private viewing link', exact: true }).click();
@@ -43,7 +43,8 @@ test('an invited viewer can register and request to join a private event', { tim
     await viewer.getByRole('button', { name: /Join Studio|Register.*Join/ }).first().click();
     await viewer.getByRole('button', { name: 'Leave studio', exact: true }).waitFor();
     await host.getByRole('button', { name: 'Close invite panel', exact: true }).click();
-    await host.getByRole('button', { name: 'Move Riley backstage', exact: true }).waitFor();
+    await host.getByRole('button', { name: 'People, 1 waiting', exact: true }).click();
+    await host.getByRole('button', { name: 'Admit Riley to backstage', exact: true }).waitFor();
     assert.deepEqual(fixture.pageErrors, []);
     assert.deepEqual(fixture.cspViolations, []);
   } finally {

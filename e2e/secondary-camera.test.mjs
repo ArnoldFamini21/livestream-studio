@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
-import { admitGuest, createStudio, eventually, screenshot, stageGuest, startHarness } from './harness.mjs';
+import { admitGuest, createStudio, eventually, screenshot, stageGuest, startHarness, openStudioTool } from './harness.mjs';
 
 function observeCamera() {
   try { sessionStorage.setItem('preferredVideoQuality', '720p'); } catch { /* Blank page before navigation. */ }
@@ -76,7 +76,7 @@ test('a secondary camera joins on a phone viewport and delivers a video-only ISO
     await hostContext.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: fixture.url });
     const studio = await createStudio(hostContext, { url: fixture.url, name: 'Secondary camera qualification' });
     host = studio.page;
-    await host.getByRole('button', { name: 'Open invite panel', exact: true }).click();
+    await openStudioTool(host, 'Invite guests');
     await host.getByLabel('Mobile Join', { exact: true }).selectOption('camera');
     await host.getByRole('img', { name: 'Secondary camera invite QR code', exact: true }).waitFor();
     await host.getByRole('button', { name: 'Copy camera link', exact: true }).click();

@@ -4,7 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { deflateSync } from 'node:zlib';
-import { startHarness, createStudio, joinStudio, admitGuest, stageGuest, screenshot, eventually } from './harness.mjs';
+import { startHarness, createStudio, joinStudio, admitGuest, stageGuest, screenshot, eventually, openStudioTool } from './harness.mjs';
 
 // Observers retain only metadata. Recording and peer media still use real browser APIs.
 function observeMedia() {
@@ -143,7 +143,7 @@ test('built studio in real Chromium under the production CSP', { timeout: 420_00
     await scenario('owner creates a studio; guest waits privately and is admitted backstage', async () => {
       guest = await joinStudio(await fixture.browser('guest', { initScript: observeMedia }), { url: fixture.url, studioId });
       pages.set('guest', guest);
-      await host.getByRole('button', { name: 'Move Test Guest backstage', exact: true }).waitFor();
+      await host.getByRole('button', { name: 'People, 1 waiting', exact: true }).waitFor();
       assert.equal(await guest.getByTestId('program-return-monitor').count(), 0);
       assert.equal(await guest.evaluate(() => window.__e2eMedia.remoteTracks.filter(track => track.readyState === 'live').length), 0, 'waiting guests receive no remote media');
       await admitGuest(host, 'Test Guest');
@@ -152,7 +152,13 @@ test('built studio in real Chromium under the production CSP', { timeout: 420_00
 
     await scenario('a QR overlay appears in the real program return and can be hidden', async () => {
       const destination = 'https://example.com/service';
-      await host.getByRole('navigation', { name: 'Studio panels' }).getByRole('button', { name: 'Overlays', exact: true }).click();
+      const more = host.getByRole('button', { name: 'More tools', exact: true });
+      await more.press('Enter');
+      const search = host.getByRole('textbox', { name: 'Find a studio tool', exact: true });
+      assert.equal(await search.evaluate(input => document.activeElement === input), true);
+      await search.press('Escape');
+      assert.equal(await more.evaluate(button => document.activeElement === button), true);
+      await openStudioTool(host, 'Overlays');
       await host.getByRole('button', { name: 'Add overlay', exact: true }).click();
       await host.getByRole('button', { name: /QR code Show a link/ }).click();
       await host.getByLabel('QR code name', { exact: true }).fill('Service link');
@@ -190,7 +196,7 @@ test('built studio in real Chromium under the production CSP', { timeout: 420_00
       await screenshot(host, fixture.artifactDir, 'qr-overlay-stage');
       await host.getByRole('button', { name: 'Hide Service link', exact: true }).click();
       await host.getByRole('img', { name: 'QR code for Service link', exact: true }).waitFor({ state: 'detached' });
-      await host.getByRole('navigation', { name: 'Studio panels' }).getByRole('button', { name: 'Overlays', exact: true }).click();
+      await openStudioTool(host, 'Overlays');
     });
 
     await scenario('backstage guest receives a playing program return and moves onto stage', async () => {
@@ -221,7 +227,7 @@ test('built studio in real Chromium under the production CSP', { timeout: 420_00
 await scenario('a 150 KB logo is shared by id: the guest sees it and the host never reconnects', async () => {
       const logo = createNoisePng(205, 205);
       assert.ok(logo.length > 120_000 && logo.length < 200_000, `logo is ${logo.length} bytes`);
-      await host.getByRole('button', { name: 'Brand', exact: true }).click();
+      await openStudioTool(host, 'Brand');
       await host.locator('input[aria-label="Upload brand logo"]').setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer: logo });
       await guest.locator('img[alt="Logo"]').waitFor();
       await host.locator('img[alt="Logo"]').first().waitFor();
@@ -241,7 +247,7 @@ await scenario('a 150 KB logo is shared by id: the guest sees it and the host ne
       await host.getByRole('button', { name: 'Start Poll', exact: true }).click();
       await host.getByRole('heading', { name: 'Which topic comes next?', exact: true }).waitFor();
       await host.getByRole('button', { name: 'Close polls', exact: true }).click();
-      await host.getByRole('button', { name: 'Open invite panel', exact: true }).click();
+      await openStudioTool(host, 'Invite guests');
       const watchUrl = new URL(await host.getByLabel('Public watch page link', { exact: true }).inputValue());
       assert.match(watchUrl.pathname, /^\/watch\/[^/]+$/);
       await host.getByRole('button', { name: 'Close invite panel', exact: true }).click();
@@ -288,7 +294,7 @@ await scenario('a 150 KB logo is shared by id: the guest sees it and the host ne
     });
 
     await scenario('talkback displays a server-confirmed off-air badge', async () => {
-      await host.getByRole('button', { name: 'Talk backstage (your mic leaves the broadcast)', exact: true }).click();
+      await openStudioTool(host, 'Talk backstage');
       await host.locator('[data-testid="talkback-badge"][data-confirmed="true"]').waitFor();
       assert.equal(await host.getByTestId('talkback-badge').innerText(), 'Off air — talking backstage');
       await screenshot(host, fixture.artifactDir, 'talkback');

@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
-import { createStudio, screenshot, stageGuest, startHarness } from './harness.mjs';
+import { createStudio, screenshot, stageGuest, startHarness, openStudioTool } from './harness.mjs';
 
 const artifactDir = path.join(process.env.E2E_ARTIFACT_DIR || path.resolve('output/e2e'), 'production-rundown');
 
 async function openScenes(page) {
-  await page.getByRole('navigation', { name: 'Studio panels' })
-    .getByRole('button', { name: 'Scenes', exact: true }).click();
+  await openStudioTool(page, 'Scenes');
 }
 
 async function createScene(page, name) {
@@ -39,7 +38,7 @@ test('takes a portable scene from a co-host in a browser without that saved scen
     await host.getByRole('button', { name: 'Switch to Starting Soon', exact: true }).waitFor();
     assert.equal(await host.getByRole('button', { name: 'Switch to Presentation', exact: true }).count(), 0);
 
-    await host.getByRole('button', { name: 'Open invite panel', exact: true }).click();
+    await openStudioTool(host, 'Invite guests');
     await host.getByText('Co-host Link', { exact: true }).locator('xpath=../..')
       .getByRole('button', { name: 'Create', exact: true }).click();
     const coHostLink = new URL(await host.getByLabel('Co-host invite link', { exact: true }).inputValue());
