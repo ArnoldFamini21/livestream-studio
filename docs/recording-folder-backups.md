@@ -87,3 +87,8 @@ profile do not automatically appear in the new profile.
 
 No new hosting, storage subscription, or cloud processing service is required
 for folder saving. Existing hosting and connectivity costs are separate.
+## Private guest backups
+
+In Studio, open **More → Recordings** and select **Private guest backup for next take**. The host opts in separately for each take. Guests can then reopen **Finish upload** on the device and browser they recorded on. It works after the studio closes and resumes from the bytes storage already verified. Interrupted tracks with no completed file remain in local recovery.
+
+The host can open **Recordings → Private backups** and download each verified guest track as soon as it arrives. Keep the original private host link for access. Private backups are available for seven days. The host and program tracks continue using the regular recording destination.

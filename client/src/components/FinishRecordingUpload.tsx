@@ -61,7 +61,8 @@ export default function FinishRecordingUpload() {
         });
       if (!request.signal.aborted) setDone(current => new Set([...current, grant.takeId]));
     } catch (failure) {
-      if (!request.signal.aborted) setError(failure instanceof Error ? failure.message : 'Upload stopped. Your tracks are still saved on this device.');
+      if (!request.signal.aborted) setError(failure instanceof TypeError ? 'Connection interrupted. Choose Finish upload to continue.'
+        : failure instanceof Error ? failure.message : 'Upload stopped. Your tracks are still saved on this device.');
     } finally {
       controller.current = null;
       setWorking('');

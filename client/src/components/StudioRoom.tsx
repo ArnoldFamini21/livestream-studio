@@ -7400,6 +7400,7 @@ export function StudioRoom() {
           isHost={false}
           isScreenSharing={false}
           onOpenChat={isHeldOffStageGuest ? () => setShowGuestChat(!showGuestChat) : undefined}
+          onFinishGuestUpload={guestRecoveryAvailable && !recordingStatus.active && !participantRecordingFinalizing ? () => navigate('/finish-upload') : undefined}
           participantCount={allParticipantsMap.size}
           isLive={isLive}
         />
@@ -8833,6 +8834,7 @@ export function StudioRoom() {
         onOpenBackgroundMusic={() => toggleToolPanel('backgroundMusic')}
         backgroundMusicPlaying={backgroundMusicPlaying}
         onOpenRecordingPanel={canControlRecording ? () => toggleToolPanel('recording') : undefined}
+        onFinishGuestUpload={!isHostOrCoHost && guestRecoveryAvailable && !recordingStatus.active && !participantRecordingFinalizing ? () => navigate('/finish-upload') : undefined}
         onOpenProducerPanel={() => toggleToolPanel('producer')}
         onOpenWebinarQA={() => toggleToolPanel('webinarQA')}
         onOpenPolls={() => toggleToolPanel('polls')}

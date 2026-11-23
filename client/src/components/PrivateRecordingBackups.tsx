@@ -38,11 +38,22 @@ function PrivateRecordingTake({ reference, hostToken }: { reference: PrivateReco
   const [reload, setReload] = useState(0);
   useEffect(() => {
     const request = new AbortController();
+    let timer: number | undefined;
     setError('');
-    void readPrivateRecoveryTake(reference, hostToken, request.signal).then(setTake).catch(failure => {
-      if (!request.signal.aborted) setError(failure instanceof Error ? failure.message : 'Could not check the private copy.');
-    });
-    return () => request.abort();
+    const check = async () => {
+      try {
+        const result = await readPrivateRecoveryTake(reference, hostToken, request.signal);
+        if (!request.signal.aborted) {
+          setTake(result);
+          setError('');
+          timer = window.setTimeout(() => void check(), 15_000);
+        }
+      } catch (failure) {
+        if (!request.signal.aborted) setError(failure instanceof Error ? failure.message : 'Could not check the private copy.');
+      }
+    };
+    void check();
+    return () => { request.abort(); window.clearTimeout(timer); };
   }, [hostToken, reference, reload]);
 
   const download = async (track: PrivateRecoveryTrack) => {
