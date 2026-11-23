@@ -17,6 +17,7 @@ on:
         options:
           - browser
           - webcodecs
+          - webcodecs-owned
           - webcodecs-h264
       recording_preflight_only:
         description: Run only the 35-second recording preflight

@@ -72,6 +72,16 @@ Browser event, sample request and write times share a page clock. Add the pageâ€
 add its time from the first packet to the recorderâ€™s `startRequested`. The exact
 encoder start can fall later, so use this mapping as an estimate.
 
+To compare browser-local capture against host-folder collection, use the same
+loopback build and run `SOAK_BROWSER_LOCAL=1 SOAK_SECONDS=35 npm run test:recording-soak`.
+All three seats use their native recorders and browser storage. This diagnostic
+skips the forced reconnect and checks that RTC recording collection stays off.
+After Stop it downloads the seven originals from each seat's browser storage
+and applies the same checksum, resolution, and packet checks. `result.json`
+reports `captureDestination: "browser-local"` and `qualification: false`. For a
+matched comparison with a folder run that forces reconnect, compare camera
+samples from before the reconnect window.
+
 For an encoder comparison, `SOAK_SECONDS=20 node e2e/recording-isolation.mjs`
 records a single 720p camera and then a single 1080p canvas with one scaled
 camera and a Web Audio mix. It verifies source chunks after saving. These

@@ -410,7 +410,7 @@ export function useLocalRecording(roomName = 'Studio') {
     let mimeType = '';
     const startOptions = startOptionsRef.current;
     const streamingRecorder = startOptions?.useStreamingEncoder && source.kind === 'iso'
-      ? await preparePrimaryRecordingRecorder(stream, bitsPerSecond, LOCAL_RECORDING_AUDIO_BITS_PER_SECOND)
+      ? await preparePrimaryRecordingRecorder(stream, bitsPerSecond, LOCAL_RECORDING_AUDIO_BITS_PER_SECOND, true)
       : null;
     if (source.format === 'wav') {
       // Lossless mic: prefer an unprocessed capture of the same microphone.

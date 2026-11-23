@@ -1,4 +1,5 @@
-import type { MediaStreamAudioTrackSource, MediaStreamVideoTrackSource, Output } from 'mediabunny';
+import type { MediaStreamAudioTrackSource, MediaStreamVideoTrackSource, Output, VideoEncodingConfig } from 'mediabunny';
+import { createRecordingOwnedVideoSource } from './recordingOwnedVideoSource.ts';
 
 type Mediabunny = typeof import('mediabunny');
 type VideoTrack = ConstructorParameters<Mediabunny['MediaStreamVideoTrackSource']>[0];
@@ -16,6 +17,7 @@ const MAX_TRACK_LEAD_SECONDS = 5;
 
 export interface StreamingWebCodecsRecorderOptions {
   profile?: StreamingWebCodecsRecorderProfile;
+  copyCameraFrames?: boolean;
   videoBitsPerSecond: number;
   audioBitsPerSecond: number;
 }
@@ -26,6 +28,7 @@ export async function prepareStreamingWebCodecsRecorder(
   options: StreamingWebCodecsRecorderOptions,
 ): Promise<StreamingWebCodecsRecorder | null> {
   if (!('MediaStreamTrackProcessor' in globalThis) || typeof VideoEncoder !== 'function' || typeof AudioEncoder !== 'function') return null;
+  if (options.copyCameraFrames && (typeof VideoFrame !== 'function' || typeof VideoFrame.prototype.copyTo !== 'function')) return null;
   if (!Number.isInteger(options.videoBitsPerSecond) || options.videoBitsPerSecond <= 0
     || !Number.isInteger(options.audioBitsPerSecond) || options.audioBitsPerSecond <= 0) return null;
 
@@ -57,6 +60,7 @@ export async function prepareStreamingWebCodecsRecorder(
 /** Emits the append-only container bytes created from the actual input samples. */
 export class StreamingWebCodecsRecorder extends EventTarget {
   readonly mimeType: string;
+  readonly usesOwnedCameraFrames: boolean;
   private readonly profile: (typeof ENCODER_PROFILES)[StreamingWebCodecsRecorderProfile];
   state: RecordingState = 'inactive';
   onstart: ((event: Event) => void) | null = null;
@@ -65,7 +69,8 @@ export class StreamingWebCodecsRecorder extends EventTarget {
   onerror: ((event: ErrorEvent) => void) | null = null;
 
   private output: Output | null = null;
-  private video: MediaStreamVideoTrackSource | null = null;
+  private video: MediaStreamVideoTrackSource | ReturnType<typeof createRecordingOwnedVideoSource> | null = null;
+  private ownedVideo: ReturnType<typeof createRecordingOwnedVideoSource> | null = null;
   private audio: MediaStreamAudioTrackSource | null = null;
   private starting: Promise<void> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -85,6 +90,7 @@ export class StreamingWebCodecsRecorder extends EventTarget {
     super();
     this.profile = ENCODER_PROFILES[options.profile ?? 'vp9'];
     this.mimeType = this.profile.mimeType;
+    this.usesOwnedCameraFrames = options.copyCameraFrames === true;
     this.addEventListener('start', (event) => this.onstart?.(event));
     this.addEventListener('dataavailable', (event) => this.ondataavailable?.(event as BlobEvent));
     this.addEventListener('stop', (event) => this.onstop?.(event));
@@ -104,30 +110,47 @@ export class StreamingWebCodecsRecorder extends EventTarget {
       ? new Mp4OutputFormat({ fastStart: 'fragmented', minimumFragmentDuration: 1 })
       : new WebMOutputFormat({ appendOnly: true });
     const output = new Output({ format, target });
-    const video = new MediaStreamVideoTrackSource(this.videoTrack, {
+    const videoConfig: VideoEncodingConfig = {
       codec: this.profile.video,
       hardwareAcceleration: this.profile.hardwareAcceleration,
       bitrate: this.options.videoBitsPerSecond,
       keyFrameInterval: 1,
       onEncodedPacket: (packet) => this.notePacket('video', packet),
-    }, { frameRate: null });
+    };
+    const ownedVideo = this.usesOwnedCameraFrames
+      ? createRecordingOwnedVideoSource(this.videoTrack, { ...videoConfig, latencyMode: 'realtime' }, this.library)
+      : null;
+    const video = ownedVideo ?? new MediaStreamVideoTrackSource(this.videoTrack, videoConfig, { frameRate: null });
     const audio = new MediaStreamAudioTrackSource(this.audioTrack, {
       codec: this.profile.audio,
       bitrate: this.options.audioBitsPerSecond,
       onEncodedPacket: (packet) => this.notePacket('audio', packet),
     });
-    output.addVideoTrack(video);
+    output.addVideoTrack('source' in video ? video.source : video);
     output.addAudioTrack(audio);
     this.output = output;
     this.video = video;
+    this.ownedVideo = ownedVideo;
     this.audio = audio;
     this.state = 'recording';
     void video.errorPromise.catch((error) => this.fail(error));
     void audio.errorPromise.catch((error) => this.fail(error));
     this.starting = output.start();
+    if (ownedVideo) {
+      this.starting = this.starting.then(() => {
+        if (this.state === 'inactive') return;
+        // Match Mediabunny's synced-zero clock for the live audio source. The
+        // camera copy only shifts the first timestamp and preserves raw intervals.
+        ownedVideo.start(receivedAt => {
+          const timeline = output as Output & { _firstMediaStreamTimestamp?: number | null };
+          timeline._firstMediaStreamTimestamp ??= receivedAt;
+          return receivedAt - timeline._firstMediaStreamTimestamp;
+        });
+      });
+    }
     void this.starting.then(() => {
       if (this.state !== 'inactive') this.dispatchEvent(new Event('start'));
-    }, (error) => this.fail(error));
+    }, error => this.fail(error));
     const interval = Number.isFinite(timeslice) ? Math.max(50, Math.min(timeslice, 1000)) : 1000;
     this.timer = setInterval(() => this.flushBatch(), interval);
     this.videoTrack.addEventListener('ended', this.onInputEnded, { once: true });
@@ -210,6 +233,7 @@ export class StreamingWebCodecsRecorder extends EventTarget {
   private async finish(): Promise<void> {
     try {
       await this.starting;
+      if (this.ownedVideo) await this.ownedVideo.stop();
       await this.output?.finalize();
     } catch (error) {
       this.fail(error);
