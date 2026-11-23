@@ -4,8 +4,8 @@ import { buildRenderFileName, getBrowserRenderSupport } from '../utils/cleanedRe
 import { getCleanedDurationSeconds, getTrackAlignmentSeconds, inferEditListTrackRole, mapKeepRangesToTrack } from '../utils/editListExport.ts';
 import { getAlignedTrackStartMs } from '../utils/recordingTakeManifest.ts';
 import {
-  MAX_MEMORY_MIX_SECONDS, MAX_MIX_GAIN_DB, MAX_MIX_SECONDS, MAX_MIX_TRACKS, MIN_MIX_GAIN_DB,
-  clampMixGain, defaultTrackMixSetting, type RecordingTrackMixSettings,
+  MAX_CAMERA_CUTS, MAX_MEMORY_MIX_SECONDS, MAX_MIX_GAIN_DB, MAX_MIX_SECONDS, MAX_MIX_TRACKS, MIN_MIX_GAIN_DB,
+  clampMixGain, defaultTrackMixSetting, planMixPictureRuns, type RecordingTrackMixSettings,
 } from '../utils/recordingTrackMix.ts';
 import { createPreviewRenderOutput, type RenderOutputFile } from '../utils/renderOutputFolder.ts';
 import type { TimeRange } from '../utils/transcriptCleanup.ts';
@@ -34,12 +34,13 @@ function releaseMix(run: MixRun | null) {
 }
 
 export function RecordingTrackMix({
-  tracks, sourceIndex, keepRanges, baseName, value = INITIAL_MIX, onChange, disabled, captions, onDownload,
+  tracks, sourceIndex, keepRanges, baseName, sourcePlayhead, value = INITIAL_MIX, onChange, disabled, captions, onDownload,
 }: {
   tracks: CleanedRenderTrack[];
   sourceIndex: number;
   keepRanges: TimeRange[];
   baseName: string;
+  sourcePlayhead: number;
   value?: RecordingTrackMixSettings;
   onChange: (value: RecordingTrackMixSettings) => void;
   disabled: boolean;
@@ -56,6 +57,11 @@ export function RecordingTrackMix({
   const stems = audioTracks.map(({ track }) => track);
   const picture = pictureTracks.find(({ track }) => track.id === value.pictureId)
     ?? pictureTracks.find(({ track }) => track.kind === 'program') ?? pictureTracks[0];
+  const cuts = value.cameraCuts ?? [];
+  const [cutTime, setCutTime] = useState('');
+  const [cutPictureId, setCutPictureId] = useState('');
+  const nextPictureId = pictureTracks.find(({ track }) => track.id === cutPictureId)?.track.id
+    ?? pictureTracks.find(({ track }) => track.id !== picture?.track.id)?.track.id ?? '';
   const audio = audioTracks.map(({ track, index }) => ({
     track, index, setting: value.tracks[track.id] ?? defaultTrackMixSetting(track, stems),
   }));
@@ -81,8 +87,22 @@ export function RecordingTrackMix({
   const duration = getCleanedDurationSeconds(keepRanges);
   const tooMany = audio.filter(({ setting }) => !setting.muted).length > MAX_MIX_TRACKS;
   const cannotRender = !support.supported || disabled || tooMany || duration > MAX_MIX_SECONDS;
+  const selectedPictures = pictureTracks.filter(({ track }) => track.id === picture.track.id || cuts.some((cut) => cut.pictureId === track.id));
   const incompleteTiming = getAlignedTrackStartMs(tracks[sourceIndex]?.capture) === null
-    || [picture, ...audio.filter(({ setting }) => !setting.muted)].some(({ track }) => getAlignedTrackStartMs(track.capture) === null);
+    || [...selectedPictures, ...audio.filter(({ setting }) => !setting.muted)].some(({ track }) => getAlignedTrackStartMs(track.capture) === null);
+  const atSeconds = Math.round(Number(cutTime) * 100) / 100;
+  const lastKeptTime = keepRanges.at(-1)?.endSeconds ?? 0;
+  const canAddCut = cutTime.trim() && Number.isFinite(atSeconds) && atSeconds >= 0 && atSeconds < lastKeptTime
+    && !cuts.some((cut) => cut.atSeconds === atSeconds) && nextPictureId && cuts.length < MAX_CAMERA_CUTS;
+
+  const addCut = () => {
+    if (!canAddCut) return;
+    onChange({
+      ...value,
+      cameraCuts: [...cuts, { atSeconds, pictureId: nextPictureId }].sort((left, right) => left.atSeconds - right.atSeconds),
+    });
+    setCutTime('');
+  };
 
   const render = async () => {
     if (rendering || cannotRender) return;
@@ -94,7 +114,11 @@ export function RecordingTrackMix({
     setProgress({ revision, fraction: 0 });
     try {
       const alignment = getTrackAlignmentSeconds(tracks, sourceIndex);
-      const segments = mapKeepRangesToTrack(keepRanges, alignment[picture.index]);
+      const mixPictures = pictureTracks.map(({ track, index }) => ({ ...track, alignmentSeconds: alignment[index] }));
+      const firstPicture = { ...picture.track, alignmentSeconds: alignment[picture.index] };
+      const pictureRuns = cuts.length > 0 ? planMixPictureRuns(keepRanges, firstPicture, mixPictures, cuts) : undefined;
+      const outputPicture = pictureRuns?.[0]?.picture ?? firstPicture;
+      const segments = pictureRuns?.[0]?.segments ?? mapKeepRangesToTrack(keepRanges, firstPicture.alignmentSeconds);
       if (!segments.length) throw new Error('This picture track has no footage in the edited range. Choose another track.');
       const sources = audio.map(({ track, index, setting }) => ({
         ...setting, blob: track.blob, label: track.label, segments: mapKeepRangesToTrack(keepRanges, alignment[index]),
@@ -108,9 +132,10 @@ export function RecordingTrackMix({
       const { renderCleanedTrack } = await import('../utils/cleanedRender.ts');
       let lastProgress = 0;
       const result = await renderCleanedTrack({
-        blob: picture.track.blob,
-        label: picture.track.label,
+        blob: outputPicture.blob,
+        label: outputPicture.label,
         segments,
+        pictureRuns,
         audioMix: { sources, durationSeconds: duration },
         output: run.output,
         captions,
@@ -146,11 +171,30 @@ export function RecordingTrackMix({
     <p className="transcript-cleanup__hint">Choose a picture track and balance the individual recordings. The preview uses the same file as the MP4 download.</p>
     <fieldset className="transcript-mix__controls" aria-label="Mix controls" disabled={rendering}>
       <label className="transcript-mix__picture">
-        <span>Picture track</span>
+        <span>{cuts.length ? 'Starting picture track' : 'Picture track'}</span>
         <select value={picture.track.id} onChange={(event) => onChange({ ...value, pictureId: event.currentTarget.value })}>
           {pictureTracks.map(({ track }) => <option key={track.id} value={track.id}>{track.label}</option>)}
         </select>
       </label>
+      {(pictureTracks.length > 1 || cuts.length > 0) && <div className="transcript-mix__cameras">
+        {cuts.length > 0 && <ul className="transcript-mix__tracks" aria-label="Camera cuts">
+          {cuts.map((cut, index) => <li className="transcript-mix__picture" key={cut.atSeconds}>
+            <span>{cut.atSeconds.toFixed(2)}s · {pictureTracks.find(({ track }) => track.id === cut.pictureId)?.track.label ?? 'Unavailable picture'}</span>
+            <button className="transcript-cleanup__button" type="button" aria-label={`Remove cut at ${cut.atSeconds}s`}
+              onClick={() => onChange({ ...value, cameraCuts: cuts.filter((_, position) => position !== index) })}>Remove</button>
+          </li>)}
+        </ul>}
+        {cuts.length < MAX_CAMERA_CUTS && pictureTracks.length > 1 && <div className="transcript-mix__picture">
+          <label>Cut time in take (s) <input type="number" min="0" step="0.01" inputMode="decimal" value={cutTime}
+            onChange={(event) => setCutTime(event.currentTarget.value)} /></label>
+          <button className="transcript-cleanup__button" type="button"
+            onClick={() => setCutTime(Math.max(0, sourcePlayhead).toFixed(2))}>Use playhead</button>
+          <label>Switch to <select value={nextPictureId} onChange={(event) => setCutPictureId(event.currentTarget.value)}>
+            {pictureTracks.map(({ track }) => <option key={track.id} value={track.id}>{track.label}</option>)}
+          </select></label>
+          <button className="transcript-cleanup__button" type="button" disabled={!canAddCut} onClick={addCut}>Add camera cut</button>
+        </div>}
+      </div>}
       <ul className="transcript-mix__tracks">
         {audio.map(({ track, setting }, index) => {
           const gainId = `${id}-gain-${index}`;

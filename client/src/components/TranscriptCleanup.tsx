@@ -418,6 +418,7 @@ export function TranscriptCleanup({
       sourceIndex={editSourceIndex}
       keepRanges={keepRanges}
       baseName={exportBaseName}
+      sourcePlayhead={preview.time - previewShift}
       value={editor.mix.settings}
       onChange={editor.mix.onChange}
       disabled={editDisabled || tooManyCuts}

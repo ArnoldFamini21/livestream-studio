@@ -1,6 +1,7 @@
 import { openTimelineAudioWindowReader, type AudioWindowReader } from './audioWindowReader.ts';
 import { CUT_FADE_SECONDS } from './cleanedRenderPlan.ts';
 import type { EditSegment } from './editListExport.ts';
+import type { TimeRange } from './transcriptCleanup.ts';
 
 export const MIX_SAMPLE_RATE = 48_000;
 export const MAX_MIX_TRACKS = 8;
@@ -8,6 +9,7 @@ export const MAX_MIX_SECONDS = 10 * 60;
 export const MAX_MEMORY_MIX_SECONDS = 90;
 export const MIN_MIX_GAIN_DB = -24;
 export const MAX_MIX_GAIN_DB = 12;
+export const MAX_CAMERA_CUTS = 6;
 
 export interface RecordingTrackMixSetting {
   gainDb: number;
@@ -16,7 +18,65 @@ export interface RecordingTrackMixSetting {
 
 export interface RecordingTrackMixSettings {
   pictureId?: string;
+  cameraCuts?: CameraCut[];
   tracks: Record<string, RecordingTrackMixSetting>;
+}
+
+export interface CameraCut {
+  /** Seconds on the original transcript track. */
+  atSeconds: number;
+  pictureId: string;
+}
+
+export interface MixPicture {
+  id: string;
+  label: string;
+  blob: Blob;
+  alignmentSeconds: number;
+}
+
+export interface MixPictureRun {
+  picture: MixPicture;
+  segments: EditSegment[];
+}
+
+/** Intersect camera choices with the retained transcript ranges, in export order. */
+export function planMixPictureRuns(
+  keepRanges: TimeRange[],
+  initialPicture: MixPicture,
+  pictures: MixPicture[],
+  cameraCuts: CameraCut[],
+): MixPictureRun[] {
+  if (cameraCuts.length > MAX_CAMERA_CUTS) throw new Error(`Use up to ${MAX_CAMERA_CUTS} camera cuts per mix.`);
+  const byId = new Map(pictures.map((picture) => [picture.id, picture]));
+  const cuts = cameraCuts.filter((cut) => Number.isFinite(cut.atSeconds) && cut.atSeconds >= 0)
+    .sort((left, right) => left.atSeconds - right.atSeconds);
+  let cutIndex = 0;
+  let picture = initialPicture;
+  let recordCursor = 0;
+  const runs: MixPictureRun[] = [];
+  for (const range of keepRanges) {
+    for (let start = range.startSeconds; start < range.endSeconds;) {
+      while (cutIndex < cuts.length && cuts[cutIndex].atSeconds <= start) {
+        const next = byId.get(cuts[cutIndex].pictureId);
+        if (!next) throw new Error('A camera cut refers to an unavailable track. Remove the cut or choose another track.');
+        picture = next;
+        cutIndex += 1;
+      }
+      const end = Math.min(range.endSeconds, cuts[cutIndex]?.atSeconds ?? Infinity);
+      const segment = {
+        sourceStart: start + picture.alignmentSeconds,
+        sourceEnd: end + picture.alignmentSeconds,
+        recordStart: recordCursor,
+      };
+      const run = runs.at(-1);
+      if (run?.picture.id === picture.id) run.segments.push(segment);
+      else runs.push({ picture, segments: [segment] });
+      recordCursor += end - start;
+      start = end;
+    }
+  }
+  return runs;
 }
 
 export interface RecordingMixSource extends RecordingTrackMixSetting {

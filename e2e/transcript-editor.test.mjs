@@ -51,12 +51,35 @@ async function seedMixTracks(page) {
       };
       return { ...track, capture: stamp(track, delay) };
     };
+    const canvas = document.createElement('canvas');
+    canvas.width = 160;
+    canvas.height = 120;
+    const context = canvas.getContext('2d');
+    const stream = canvas.captureStream(20);
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+    const chunks = [];
+    recorder.ondataavailable = (event) => chunks.push(event.data);
+    const stopped = new Promise((resolve) => recorder.addEventListener('stop', resolve, { once: true }));
+    recorder.start();
+    const started = performance.now();
+    while (performance.now() - started < 3200) {
+      context.fillStyle = '#bd2820';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      await new Promise((resolve) => setTimeout(resolve, 46));
+    }
+    recorder.stop();
+    await stopped;
+    stream.getTracks().forEach((track) => track.stop());
+    const picture = new Blob(chunks, { type: 'video/webm' });
+    const camera = { id: 'guest-iso', label: 'Guest ISO', fileName: 'guest-iso.webm',
+      kind: 'iso', type: picture.type, size: picture.size, blob: picture, sessionId };
     const transaction = db.transaction(['files', 'sessions'], 'readwrite');
     const files = transaction.objectStore('files');
     const sessions = transaction.objectStore('sessions');
     const [program, saved] = await Promise.all([read(files.get(fileId)), read(sessions.get(sessionId))]);
     const records = [
       { ...program, capture: stamp(program, 0) },
+      { ...camera, capture: stamp(camera, 300) },
       stem('Host', 0.35, 440, 0), stem('Guest', 0.55, 880, 0), stem('Late speaker', 0.14, 330, 1100),
     ];
     for (const record of records) files.put(record);
@@ -268,7 +291,7 @@ test('edit a saved take by transcript and export a captioned excerpt without cha
   }
 });
 
-test('preview, save and download a speaker mix using recorded track timing', { timeout: 75_000 }, async () => {
+test('preview, save and download a speaker mix and camera cuts using recorded track timing', { timeout: 85_000 }, async () => {
   const harness = await startHarness();
   try {
     const browser = await harness.browser('transcript-mix');
@@ -294,6 +317,15 @@ test('preview, save and download a speaker mix using recorded track timing', { t
     for (let step = 0; step < 6; step += 1) await hostGain.press('ArrowLeft');
     const guestMute = editor.getByRole('checkbox', { name: 'Mute Guest audio' });
     await guestMute.check();
+    const cutTime = editor.getByLabel('Cut time in take (s)');
+    const nextCamera = editor.getByLabel('Switch to');
+    const addCut = editor.getByRole('button', { name: 'Add camera cut', exact: true });
+    await cutTime.fill('0.9');
+    await nextCamera.selectOption('guest-iso');
+    await addCut.click();
+    await cutTime.fill('2.4');
+    await nextCamera.selectOption(fileId);
+    await addCut.click();
     await editor.getByRole('button', { name: 'Save edit', exact: true }).click();
     await editor.getByText('Edit saved on this device', { exact: true }).waitFor();
     await editor.getByRole('button', { name: 'Close editor', exact: true }).click();
@@ -301,6 +333,7 @@ test('preview, save and download a speaker mix using recorded track timing', { t
     await mix.click();
     assert.equal(await hostGain.inputValue(), '-6');
     assert.equal(await guestMute.isChecked(), true);
+    assert.match(await editor.getByRole('list', { name: 'Camera cuts', exact: true }).innerText(), /0\.90s.*Guest ISO[\s\S]*2\.40s.*Program/);
 
     await editor.getByRole('button', { name: 'Preview mix', exact: true }).click();
     const preview = editor.getByLabel('Mixed recording preview');
@@ -308,6 +341,19 @@ test('preview, save and download a speaker mix using recorded track timing', { t
       throw new Error((await editor.getByRole('alert').allTextContents()).join(' ') || 'The mix preview was not rendered.', { cause: error });
     });
     const measured = await preview.evaluate(async (video) => {
+      if (video.readyState < 1) await new Promise((resolve) => video.addEventListener('loadedmetadata', resolve, { once: true }));
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const painter = canvas.getContext('2d');
+      const pixelAt = async (seconds) => {
+        const seeked = new Promise((resolve) => video.addEventListener('seeked', resolve, { once: true }));
+        video.currentTime = seconds;
+        await seeked;
+        painter.drawImage(video, 0, 0);
+        return Array.from(painter.getImageData(canvas.width / 2, canvas.height / 4, 1, 1).data).slice(0, 3);
+      };
+      const [before, middle, after] = [await pixelAt(0.45), await pixelAt(1.5), await pixelAt(2.8)];
       const bytes = await (await fetch(video.src)).arrayBuffer();
       const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
       const context = new AudioContext({ sampleRate: 48_000 });
@@ -326,7 +372,8 @@ test('preview, save and download a speaker mix using recorded track timing', { t
           }
           return 2 * Math.hypot(sine, cosine) / samples;
         };
-        return { hash, host: amplitude(440, 0.35), guest: amplitude(880, 1.45), early: amplitude(330, 0.35), late: amplitude(330, 1.45) };
+        return { hash, before, middle, after, width: video.videoWidth, height: video.videoHeight,
+          host: amplitude(440, 0.35), guest: amplitude(880, 1.45), early: amplitude(330, 0.35), late: amplitude(330, 1.45) };
       } finally {
         await context.close();
       }
@@ -334,6 +381,10 @@ test('preview, save and download a speaker mix using recorded track timing', { t
     assert.ok(measured.host > 0.14 && measured.host < 0.21, JSON.stringify(measured));
     assert.ok(measured.guest < 0.025 && measured.early < 0.025, JSON.stringify(measured));
     assert.ok(measured.late > 0.105 && measured.late < 0.17, JSON.stringify(measured));
+    assert.deepEqual([measured.width, measured.height], [320, 180]);
+    assert.ok(measured.before[2] > measured.before[0] * 2, JSON.stringify(measured));
+    assert.ok(measured.middle[0] > measured.middle[1] * 2, JSON.stringify(measured));
+    assert.ok(measured.after[1] > measured.after[0] + 20, JSON.stringify(measured));
 
     const downloaded = page.waitForEvent('download');
     await editor.getByRole('button', { name: 'Download mixed MP4', exact: true }).click();
@@ -345,7 +396,7 @@ test('preview, save and download a speaker mix using recorded track timing', { t
     await hostGain.press('ArrowRight');
     assert.equal(await preview.count(), 0);
   } finally {
-    await harness.stop();
+    await harness.close();
   }
 });
 

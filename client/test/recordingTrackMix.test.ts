@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { getCleanedDurationSeconds, getTrackAlignmentSeconds, mapKeepRangesToTrack } from '../src/utils/editListExport.ts';
-import { MIX_SAMPLE_RATE, clampMixGain, defaultTrackMixSetting, mixRecordingAudio, type RecordingMixSource } from '../src/utils/recordingTrackMix.ts';
+import { MIX_SAMPLE_RATE, clampMixGain, defaultTrackMixSetting, mixRecordingAudio, planMixPictureRuns, type RecordingMixSource } from '../src/utils/recordingTrackMix.ts';
 import { encodePcm16Wav } from '../src/utils/wavEncoder.ts';
 
 function wav(value: number, duration: number, sampleRate = MIX_SAMPLE_RATE) {
@@ -60,4 +60,18 @@ test('limits controls and avoids playing a regular mic and its lossless copy by 
   const tracks = [{ id: '1', label: 'Host audio' }, { id: '2', label: 'Host mic (lossless)' }, { id: '3', label: 'Guest mic (lossless)' }];
   assert.deepEqual(tracks.map((track) => defaultTrackMixSetting(track, tracks).muted), [false, true, false]);
   assert.deepEqual([-100, 100, 4.2, NaN].map(clampMixGain), [-24, 12, 4, 0]);
+});
+
+test('keeps camera switches in take time when transcript cuts remove the switch point', () => {
+  const program = { id: 'program', blob: new Blob(), label: 'Program', alignmentSeconds: 0 };
+  const camera = { id: 'iso', blob: new Blob(), label: 'Guest ISO', alignmentSeconds: -0.25 };
+  const keep = [{ startSeconds: 0, endSeconds: 1 }, { startSeconds: 2, endSeconds: 4 }];
+  const cuts = [{ atSeconds: 3, pictureId: 'program' }, { atSeconds: 1.5, pictureId: 'iso' }];
+  const runs = planMixPictureRuns(keep, program, [program, camera], cuts);
+  assert.deepEqual(runs.map(({ picture, segments }) => [picture.id, segments]), [
+    ['program', [{ sourceStart: 0, sourceEnd: 1, recordStart: 0 }]],
+    ['iso', [{ sourceStart: 1.75, sourceEnd: 2.75, recordStart: 1 }]],
+    ['program', [{ sourceStart: 3, sourceEnd: 4, recordStart: 2 }]],
+  ]);
+  assert.throws(() => planMixPictureRuns(keep, program, [program], cuts), /unavailable track/);
 });

@@ -316,6 +316,13 @@
 
 .transcript-mix__picture select { max-width: 100%; }
 
+.transcript-mix__cameras {
+  display: grid;
+  gap: 6px;
+}
+
+.transcript-mix__cameras input[type="number"] { inline-size: 7ch; }
+
 .transcript-mix__tracks {
   display: grid;
   gap: 8px;

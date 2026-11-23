@@ -44,6 +44,11 @@ export class KeepRangeMapper {
     return segment.recordStart + (seconds - segment.sourceStart);
   }
 
+  /** Trim a frame that straddles the current edit boundary. Call after map. */
+  clipDuration(seconds: number, duration: number): number {
+    return Math.max(0, Math.min(duration, (this.segments[this.index]?.sourceEnd ?? seconds) - seconds));
+  }
+
   /** Nothing after this time is kept. */
   get done(): boolean {
     return this.index >= this.segments.length;
