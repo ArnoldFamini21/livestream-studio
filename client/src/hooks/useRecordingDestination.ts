@@ -232,6 +232,7 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
   ): Promise<{
     folder: TakeFolder;
     program: RecordingTrackStoreFactory;
+    noteProgramCaptureStart: (sourceId: string, startedAtMs: number) => void;
     host: RecordingTrackStoreFactory;
     /** Tracks recorded on this computer under another person's (or "Tracks") folder. */
     forParticipant: (participantName: string) => RecordingTrackStoreFactory;
@@ -252,11 +253,13 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
       setTakeHistoryError('Could not create a take checklist on the recording drive. Recording will use browser storage.');
       return null;
     }
+    const programStarts = new Map<string, number>();
     const track = (participantName: string, origin: TakeManifestTrackInput['origin']) => ({ id, path, bytes, input }: { id: string; path: string; bytes: number; input: RecordingTrackStoreInput }) => {
+      const programStartedAt = input.sourceId ? programStarts.get(input.sourceId) : undefined;
       take.tracks.set(id, {
         participantName, label: input.label, kind: input.kind, path, mimeType: input.mimeType, bytes, origin, status: 'complete',
         ...(input.mimeType === 'audio/wav' ? { lossless: true } : {}),
-        ...(origin === 'program' ? { capture: programCapture(take, input.mimeType) } : {}),
+        ...(origin === 'program' ? { capture: programCapture(take, input.mimeType, programStartedAt) } : {}),
       });
       scheduleManifest(take);
     };
@@ -275,6 +278,7 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
     return {
       folder,
       program: createFolderRecordingTrackStoreFactory({ take: folder, participantName: programFolder, onTrackFinished: track('Program', 'program') }),
+      noteProgramCaptureStart: (sourceId, startedAtMs) => programStarts.set(sourceId, startedAtMs),
       host: forParticipant(hostName),
       forParticipant,
     };
@@ -408,19 +412,19 @@ export function useRecordingDestination(studioName: string, roomId?: string | nu
   };
 }
 
-function programCapture(take: TakeState, mimeType: string): RecordingCaptureMetadata {
+function programCapture(take: TakeState, mimeType: string, startedAtMs = take.startedAtMs): RecordingCaptureMetadata {
   return {
     sourceId: 'program',
     sourceKind: 'program',
     sourceLabel: 'Program',
     mimeType,
     requestedBitsPerSecond: null,
-    startedAt: new Date(take.startedAtMs).toISOString(),
+    startedAt: new Date(startedAtMs).toISOString(),
     trackCount: 0,
     tracks: [],
     timeline: {
-      startMs: take.startedAtMs,
-      timeOrigin: typeof performance !== 'undefined' ? performance.timeOrigin : take.startedAtMs,
+      startMs: startedAtMs,
+      timeOrigin: take.timeOrigin,
       pauses: take.pauses,
       segmentIndex: 0,
       ...(take.stoppedAtMs ? { stopMs: take.stoppedAtMs } : {}),

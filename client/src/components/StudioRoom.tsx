@@ -4079,7 +4079,7 @@ export function StudioRoom() {
         const uploadProgram = !folderTake || recordingWorkflowRef.current.cloudUploadPreferred;
         const mediaHttpUrl = uploadProgram && roomId && mediaServerHealth.status !== 'unavailable' ? resolveMediaHttpUrl() : '';
         const started = startRecording(streams, {
-          ...(folderTake ? { storage: folderTake.program } : {}),
+          ...(folderTake ? { storage: folderTake.program, onCaptureStarted: folderTake.noteProgramCaptureStart } : {}),
           progressiveUpload: mediaHttpUrl && roomId
             ? {
                 mediaHttpUrl,
