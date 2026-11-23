@@ -10,6 +10,7 @@ import {
   type RenderProgress,
 } from './cleanedRenderPlan.ts';
 import { MAX_IN_MEMORY_RENDER_BYTES, type RenderOutputFile } from './renderOutputFolder.ts';
+import { MIX_SAMPLE_RATE, mixRecordingAudio, type RecordingMix } from './recordingTrackMix.ts';
 
 /**
  * Renders the transcript cleanup of one recorded track to MP4 entirely in
@@ -41,6 +42,8 @@ export interface CleanedRenderInput {
   segments: EditSegment[];
   output: RenderOutputFile;
   captions?: { cues: ClipCaptionCue[]; style: ClipCaptionStyle };
+  /** Optional aligned isolated tracks replace the picture file's audio. */
+  audioMix?: RecordingMix;
   signal?: AbortSignal;
   onProgress?: (progress: RenderProgress) => void;
 }
@@ -91,17 +94,18 @@ export async function renderCleanedTrack(input: CleanedRenderInput): Promise<Cle
 
   try {
     const videoTrack = await media.getPrimaryVideoTrack();
-    const audioTrack = await media.getPrimaryAudioTrack();
+    const audioTrack = input.audioMix ? null : await media.getPrimaryAudioTrack();
     const decodableVideo = videoTrack && await videoTrack.canDecode() ? videoTrack : null;
     const decodableAudio = audioTrack && await audioTrack.canDecode() ? audioTrack : null;
     if (videoTrack && !decodableVideo) {
       throw new Error(`This browser cannot decode the ${videoTrack.codec || 'video'} picture of ${input.label}.`);
     }
+    if (input.audioMix && !decodableVideo) throw new Error(`${input.label} has no decodable picture. Choose another track.`);
     if (!decodableVideo && !decodableAudio) throw new Error(`${input.label} has no picture or sound this browser can decode.`);
 
     const firstTimestamp = await media.getFirstTimestamp().catch(() => 0);
     const lastSegment = segments[segments.length - 1];
-    const totalSeconds = lastSegment.recordStart + (lastSegment.sourceEnd - lastSegment.sourceStart);
+    const totalSeconds = input.audioMix?.durationSeconds ?? lastSegment.recordStart + (lastSegment.sourceEnd - lastSegment.sourceStart);
     const readStart = firstTimestamp + segments[0].sourceStart;
     const readEnd = firstTimestamp + lastSegment.sourceEnd;
 
@@ -136,14 +140,14 @@ export async function renderCleanedTrack(input: CleanedRenderInput): Promise<Cle
 
     let audioSource: InstanceType<typeof mb.AudioSampleSource> | null = null;
     let audioCodec: string | null = null;
-    if (decodableAudio) {
-      const numberOfChannels = await decodableAudio.getNumberOfChannels();
-      const sampleRate = await decodableAudio.getSampleRate();
+    if (input.audioMix || decodableAudio) {
+      const numberOfChannels = decodableAudio ? await decodableAudio.getNumberOfChannels() : 1;
+      const sampleRate = decodableAudio ? await decodableAudio.getSampleRate() : MIX_SAMPLE_RATE;
       audioCodec = await mb.getFirstEncodableAudioCodec([...AUDIO_CODEC_PREFERENCE], { numberOfChannels, sampleRate, bitrate: AUDIO_BITRATE });
       if (audioCodec) {
         audioSource = new mb.AudioSampleSource({ codec: audioCodec as (typeof AUDIO_CODEC_PREFERENCE)[number], bitrate: AUDIO_BITRATE });
         output.addAudioTrack(audioSource);
-      } else if (!videoSource) {
+      } else if (input.audioMix || !videoSource) {
         throw new Error('This browser has no audio encoder for MP4 (AAC or Opus).');
       }
     }
@@ -166,6 +170,7 @@ export async function renderCleanedTrack(input: CleanedRenderInput): Promise<Cle
       const mapper = new KeepRangeMapper(segments);
       const captions = input.captions;
       let cueIndex = 0;
+      let wroteVideo = false;
       for await (const sample of sink.samples(readStart, readEnd)) {
         try {
           throwIfCancelled(signal);
@@ -193,18 +198,39 @@ export async function renderCleanedTrack(input: CleanedRenderInput): Promise<Cle
             sample.setTimestamp(outputTime);
             await videoSource.add(sample);
           }
+          wroteVideo = true;
           videoSeconds = outputTime;
           report();
         } finally {
           sample.close();
         }
       }
+      if (input.audioMix && !wroteVideo) throw new Error('This picture track has no footage in the edited range. Choose another track.');
       videoSeconds = totalSeconds;
       videoSource.close();
     };
 
     const renderAudio = async () => {
-      if (!audioSource || !decodableAudio) return;
+      if (!audioSource) return;
+      if (input.audioMix) {
+        for await (const { data, timestamp } of mixRecordingAudio(input.audioMix, signal)) {
+          throwIfCancelled(signal);
+          const sample = new mb.AudioSample({
+            data, format: 'f32-planar', numberOfChannels: 1, sampleRate: MIX_SAMPLE_RATE, timestamp,
+          });
+          try {
+            await audioSource.add(sample);
+            audioSeconds = timestamp + sample.duration;
+            report();
+          } finally {
+            sample.close();
+          }
+        }
+        audioSeconds = totalSeconds;
+        audioSource.close();
+        return;
+      }
+      if (!decodableAudio) return;
       const sink = new mb.AudioSampleSink(decodableAudio);
       for await (const sample of sink.samples(readStart, readEnd)) {
         try {

@@ -35,6 +35,62 @@ export async function openAudioWindowReader(blob: Blob, sampleRate = WHISPER_SAM
   return openWholeFileReader(blob, sampleRate);
 }
 
+/** Reads fixed-length PCM windows on the container's timeline, including gaps. */
+export async function openTimelineAudioWindowReader(blob: Blob, sampleRate: number, signal?: AbortSignal): Promise<AudioWindowReader> {
+  signal?.throwIfAborted();
+  const mb = await import('mediabunny');
+  const input = new mb.Input({ source: new mb.BlobSource(blob), formats: mb.ALL_FORMATS });
+  try {
+    const track = await input.getPrimaryAudioTrack();
+    if (!track || !(await track.canDecode())) throw new Error('This file has no decodable audio.');
+    const origin = await input.getFirstTimestamp().catch(() => 0);
+    const durationSeconds = Math.max(0, (await track.computeDuration()) - origin);
+    const sink = new mb.AudioSampleSink(track);
+    return {
+      durationSeconds,
+      async readWindow(startSeconds, endSeconds) {
+        signal?.throwIfAborted();
+        const length = Math.max(0, Math.round((endSeconds - startSeconds) * sampleRate));
+        const output = new Float32Array(length);
+        if (length === 0) return output;
+        const from = origin + startSeconds;
+        const to = Math.min(origin + endSeconds, origin + durationSeconds);
+        if (to <= from) return output;
+        for await (const sample of sink.samples(from, to)) {
+          try {
+            signal?.throwIfAborted();
+            const sourceFrames = sample.numberOfFrames;
+            const sampleStart = (sample.timestamp - from) * sampleRate;
+            const first = Math.max(0, Math.round(sampleStart));
+            const end = Math.min(length, Math.round(sampleStart + sample.duration * sampleRate));
+            if (first >= end) continue;
+            const ratio = sample.sampleRate / sampleRate;
+            const plane = new Float32Array(sourceFrames);
+            output.fill(0, first, end);
+            for (let planeIndex = 0; planeIndex < sample.numberOfChannels; planeIndex += 1) {
+              sample.copyTo(plane, { planeIndex, format: 'f32-planar' });
+              for (let frame = first; frame < end; frame += 1) {
+                const position = Math.min(sourceFrames - 1, Math.max(0, (frame - sampleStart) * ratio));
+                const left = Math.floor(position);
+                const right = Math.min(sourceFrames - 1, left + 1);
+                const value = plane[left] + (plane[right] - plane[left]) * (position - left);
+                output[frame] += value / sample.numberOfChannels;
+              }
+            }
+          } finally {
+            sample.close();
+          }
+        }
+        return output;
+      },
+      close: () => input.dispose(),
+    };
+  } catch (error) {
+    input.dispose();
+    throw error;
+  }
+}
+
 async function openStreamingReader(blob: Blob, sampleRate: number): Promise<AudioWindowReader | null> {
   if (typeof (globalThis as { AudioDecoder?: unknown }).AudioDecoder !== 'function') return null;
   const mb = await import('mediabunny');

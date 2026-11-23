@@ -15,8 +15,10 @@ import {
 import { encodePcm16Wav } from '../utils/wavEncoder.ts';
 import { buildCleanupEditListFiles, getTrackAlignmentSeconds, inferEditListTrackRole, mapKeepRangesToTrack, type EditListMarker } from '../utils/editListExport.ts';
 import type { ClipCaptionStyle } from '../utils/clipCaptions.ts';
+import type { RecordingTrackMixSettings } from '../utils/recordingTrackMix.ts';
 import { buildEditedClipCaptions, createTranscriptEditDraft, editTranscriptWordRange, limitTranscriptKeepRanges, type TranscriptEditDraft } from '../utils/transcriptEditing.ts';
 import { CleanedVideoRender, type CleanedRenderTrack } from './CleanedVideoRender.tsx';
+import { RecordingTrackMix } from './RecordingTrackMix.tsx';
 
 const PAUSE_THRESHOLDS = [0.7, 1, 1.5, 2, 3];
 /** Decoding more than this in the browser risks running out of memory; the server export has no such limit. */
@@ -61,7 +63,12 @@ export function TranscriptCleanup({
   sourceTrackIndex?: number;
   studioName?: string;
   markers?: EditListMarker[];
-  editor?: { draft: TranscriptEditDraft; onChange: (draft: TranscriptEditDraft) => void; captionStyle: ClipCaptionStyle };
+  editor?: {
+    draft: TranscriptEditDraft;
+    onChange: (draft: TranscriptEditDraft) => void;
+    captionStyle: ClipCaptionStyle;
+    mix?: { settings?: RecordingTrackMixSettings; onChange: (settings: RecordingTrackMixSettings) => void };
+  };
 }) {
   const [localDraft, setLocalDraft] = useState(() => createTranscriptEditDraft(true));
   const draft = editor?.draft ?? localDraft;
@@ -403,6 +410,18 @@ export function TranscriptCleanup({
       disabled={editDisabled || tooManyCuts}
       excerpt={Boolean(excerpt)}
       captions={editor ? { cues: captionCues, style: editor.captionStyle } : undefined}
+      onDownload={onDownload}
+    />}
+
+    {editor?.mix && <RecordingTrackMix
+      tracks={editTracks}
+      sourceIndex={editSourceIndex}
+      keepRanges={keepRanges}
+      baseName={exportBaseName}
+      value={editor.mix.settings}
+      onChange={editor.mix.onChange}
+      disabled={editDisabled || tooManyCuts}
+      captions={{ cues: captionCues, style: editor.captionStyle }}
       onDownload={onDownload}
     />}
 

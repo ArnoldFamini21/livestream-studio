@@ -6,6 +6,7 @@ import { buildRenderFileName, getBrowserRenderSupport, type RenderProgress } fro
 import { openRenderOutputFolder, type RenderOutputFolder } from '../utils/renderOutputFolder.ts';
 
 export interface CleanedRenderTrack extends EditListTrackInput {
+  id?: string;
   blob: Blob;
 }
 

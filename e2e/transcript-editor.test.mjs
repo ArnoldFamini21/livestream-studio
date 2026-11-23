@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -7,6 +8,67 @@ import { createStudio, startHarness } from './harness.mjs';
 
 const sessionId = 'test-editor-take';
 const fileId = sessionId + '-track-1';
+
+async function seedMixTracks(page) {
+  await page.evaluate(async ({ sessionId, fileId }) => {
+    const read = (request) => new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const db = await read(indexedDB.open('livestream-studio-recording-library'));
+    const origin = Date.parse('2026-08-22T02:00:00Z');
+    const stamp = (track, delay) => ({
+      sourceId: track.id, sourceKind: track.kind, sourceLabel: track.label, mimeType: track.type,
+      startedAt: new Date(origin + delay).toISOString(), trackCount: 0, tracks: [],
+      timeline: { timeOrigin: origin, startMs: origin + delay, segmentIndex: 0, pauses: [] },
+    });
+    const stem = (name, amplitude, frequency, delay) => {
+      const rate = 48_000;
+      const frames = rate * 4;
+      const bytes = new Uint8Array(44 + frames * 2);
+      const view = new DataView(bytes.buffer);
+      const tag = (offset, value) => bytes.set(new TextEncoder().encode(value), offset);
+      tag(0, 'RIFF');
+      view.setUint32(4, bytes.length - 8, true);
+      tag(8, 'WAVE');
+      tag(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, rate, true);
+      view.setUint32(28, rate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      tag(36, 'data');
+      view.setUint32(40, frames * 2, true);
+      for (let frame = 0; frame < frames; frame += 1) {
+        view.setInt16(44 + frame * 2, 32767 * amplitude * Math.sin(2 * Math.PI * frequency * frame / rate), true);
+      }
+      const blob = new Blob([bytes], { type: 'audio/wav' });
+      const track = {
+        id: name + '-audio', label: name + ' audio', fileName: name + '.wav',
+        kind: 'audio', type: blob.type, size: blob.size, blob, sessionId,
+      };
+      return { ...track, capture: stamp(track, delay) };
+    };
+    const transaction = db.transaction(['files', 'sessions'], 'readwrite');
+    const files = transaction.objectStore('files');
+    const sessions = transaction.objectStore('sessions');
+    const [program, saved] = await Promise.all([read(files.get(fileId)), read(sessions.get(sessionId))]);
+    const records = [
+      { ...program, capture: stamp(program, 0) },
+      stem('Host', 0.35, 440, 0), stem('Guest', 0.55, 880, 0), stem('Late speaker', 0.14, 330, 1100),
+    ];
+    for (const record of records) files.put(record);
+    sessions.put({ ...saved, trackCount: records.length, totalBytes: records.reduce((sum, file) => sum + file.size, 0),
+      files: records.map(({ blob: _blob, sessionId: _sessionId, ...file }) => file) });
+    await new Promise((resolve, reject) => {
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+  }, { sessionId, fileId });
+}
 
 async function seedTake(page, durationSeconds = 3.5) {
   return page.evaluate(async ({ sessionId, fileId, durationSeconds }) => {
@@ -203,6 +265,87 @@ test('edit a saved take by transcript and export a captioned excerpt without cha
     assert.deepEqual(harness.cspViolations, []);
   } finally {
     await harness.close();
+  }
+});
+
+test('preview, save and download a speaker mix using recorded track timing', { timeout: 75_000 }, async () => {
+  const harness = await startHarness();
+  try {
+    const browser = await harness.browser('transcript-mix');
+    const seedPage = await browser.newPage();
+    const fixtureUrl = harness.url + '/mix-fixture';
+    await seedPage.route(fixtureUrl, (route) => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Mix fixture</title>' }));
+    await seedPage.goto(fixtureUrl);
+    const { sourceSize } = await seedTake(seedPage);
+    await seedMixTracks(seedPage);
+    await seedPage.close();
+    const { page } = await createStudio(browser, { url: harness.url, name: 'Mix editor test' });
+    await page.getByRole('button', { name: 'More tools', exact: true }).click();
+    await page.getByRole('button', { name: 'Recordings', exact: true }).click();
+    const openEditor = page.getByRole('button', { name: 'Edit transcript', exact: true });
+    await openEditor.waitFor();
+    await seedEdit(page, sourceSize);
+    await openEditor.click();
+    const editor = page.getByRole('dialog', { name: 'Transcript editor' });
+    const mix = editor.getByText('Multitrack mix', { exact: true });
+    await mix.click();
+    assert.equal(await editor.getByLabel('Picture track').inputValue(), fileId);
+    const hostGain = editor.getByRole('slider', { name: 'Host audio' });
+    for (let step = 0; step < 6; step += 1) await hostGain.press('ArrowLeft');
+    const guestMute = editor.getByRole('checkbox', { name: 'Mute Guest audio' });
+    await guestMute.check();
+    await editor.getByRole('button', { name: 'Save edit', exact: true }).click();
+    await editor.getByText('Edit saved on this device', { exact: true }).waitFor();
+    await editor.getByRole('button', { name: 'Close editor', exact: true }).click();
+    await openEditor.click();
+    await mix.click();
+    assert.equal(await hostGain.inputValue(), '-6');
+    assert.equal(await guestMute.isChecked(), true);
+
+    await editor.getByRole('button', { name: 'Preview mix', exact: true }).click();
+    const preview = editor.getByLabel('Mixed recording preview');
+    await preview.waitFor({ timeout: 20_000 }).catch(async (error) => {
+      throw new Error((await editor.getByRole('alert').allTextContents()).join(' ') || 'The mix preview was not rendered.', { cause: error });
+    });
+    const measured = await preview.evaluate(async (video) => {
+      const bytes = await (await fetch(video.src)).arrayBuffer();
+      const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+      const context = new AudioContext({ sampleRate: 48_000 });
+      try {
+        const audio = await context.decodeAudioData(bytes);
+        const mono = audio.getChannelData(0);
+        const amplitude = (frequency, start) => {
+          const samples = audio.sampleRate / 5;
+          const offset = Math.round(start * audio.sampleRate);
+          let sine = 0;
+          let cosine = 0;
+          for (let frame = 0; frame < samples; frame += 1) {
+            const angle = 2 * Math.PI * frequency * frame / audio.sampleRate;
+            sine += mono[offset + frame] * Math.sin(angle);
+            cosine += mono[offset + frame] * Math.cos(angle);
+          }
+          return 2 * Math.hypot(sine, cosine) / samples;
+        };
+        return { hash, host: amplitude(440, 0.35), guest: amplitude(880, 1.45), early: amplitude(330, 0.35), late: amplitude(330, 1.45) };
+      } finally {
+        await context.close();
+      }
+    });
+    assert.ok(measured.host > 0.14 && measured.host < 0.21, JSON.stringify(measured));
+    assert.ok(measured.guest < 0.025 && measured.early < 0.025, JSON.stringify(measured));
+    assert.ok(measured.late > 0.105 && measured.late < 0.17, JSON.stringify(measured));
+
+    const downloaded = page.waitForEvent('download');
+    await editor.getByRole('button', { name: 'Download mixed MP4', exact: true }).click();
+    const exportFile = await downloaded;
+    assert.match(exportFile.suggestedFilename(), /_mix_cleaned\.mp4$/);
+    const output = path.join(harness.artifactDir, 'multitrack-mix.mp4');
+    await exportFile.saveAs(output);
+    assert.equal(createHash('sha256').update(await readFile(output)).digest('hex'), measured.hash);
+    await hostGain.press('ArrowRight');
+    assert.equal(await preview.count(), 0);
+  } finally {
+    await harness.stop();
   }
 });
 

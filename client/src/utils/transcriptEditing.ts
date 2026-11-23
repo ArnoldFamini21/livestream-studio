@@ -1,6 +1,7 @@
 import { buildClipCaptionCues, type ClipCaptionCue } from './clipCaptions.ts';
 import type { EditListWord } from './editListExport.ts';
 import type { RecordingTranscriptionResult } from './recordingTranscription.ts';
+import type { RecordingTrackMixSettings } from './recordingTrackMix.ts';
 import { DEFAULT_CLEANUP_OPTIONS, type CleanupWordState, type TimeRange } from './transcriptCleanup.ts';
 
 export interface TranscriptEditDraft {
@@ -18,6 +19,7 @@ export interface RecordingTranscriptProject {
   sourceSize: number;
   transcript: RecordingTranscriptionResult;
   edit: TranscriptEditDraft;
+  mix?: RecordingTrackMixSettings;
 }
 
 export function createTranscriptEditDraft(automatic: boolean): TranscriptEditDraft {
