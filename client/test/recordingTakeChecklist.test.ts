@@ -55,8 +55,9 @@ test('guest expectations use stage role, media switches and screen-sharing state
   assert.deepEqual(expectedGuestTracks([
     seat({}), seat({ id: 'guest-2', status: 'green-room' }), seat({ id: 'operator', role: 'co-host' }),
     seat({ id: 'audio-seat', name: 'No camera', videoEnabled: false, screenSharing: false }),
+    seat({ id: 'second-camera', cameraOnly: true }),
   ]).map(row => [row.participantId, row.kind]), [
-    ['guest-1', 'iso'], ['guest-1', 'audio'], ['guest-1', 'screen'], ['audio-seat', 'audio'],
+    ['guest-1', 'iso'], ['guest-1', 'audio'], ['guest-1', 'screen'], ['audio-seat', 'audio'], ['second-camera', 'iso'],
   ]);
 });
 

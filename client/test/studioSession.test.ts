@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { buildSecondaryCameraInvite, isSecondaryCameraEntry, studioSeatStorageKey } from '../src/utils/secondaryCamera.ts';
 import {
   ROOM_LOST_RETRY_WINDOW_MS,
   buildStudioJoinPayload,
@@ -31,6 +32,20 @@ describe('studio seat resume', () => {
     assert.equal(getStudioRestoreTicket('room-a', local), 'ticket-a');
     saveStudioResumeToken('room-a', null, session);
     assert.equal(getStudioResumeToken('room-a', session), undefined);
+  });
+
+  it('opens a separate camera seat without losing the guest invite parameters', () => {
+    const invite = new URL(buildSecondaryCameraInvite('https://example.test/join/room-a?studio=Sunday#guestInvite=token'));
+    assert.ok(isSecondaryCameraEntry(invite.searchParams));
+    assert.equal(invite.searchParams.get('studio'), 'Sunday');
+    assert.equal(invite.hash, '#guestInvite=token');
+
+    const session = memoryStorage();
+    saveStudioResumeToken(studioSeatStorageKey('room-a', true), 'camera-token', session);
+    assert.equal(getStudioResumeToken(studioSeatStorageKey('room-a', false), session), undefined);
+    assert.equal(getStudioResumeToken(studioSeatStorageKey('room-a', true), session), 'camera-token');
+    assert.equal(buildStudioJoinPayload({ roomId: 'room-a', name: 'Wide shot', role: 'guest', cameraOnly: true }).cameraOnly, true);
+    assert.equal(buildStudioJoinPayload({ roomId: 'room-a', name: 'Host', role: 'host', cameraOnly: true }).cameraOnly, undefined);
   });
 
   it('does not re-send spent single-use invite tokens once a seat can be resumed', () => {

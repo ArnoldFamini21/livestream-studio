@@ -78,7 +78,7 @@ export function ParticipantManager({
               {!p.audioEnabled ? null : (
                 <ActionBtn label="Mute" color="var(--text-muted)" onClick={() => onStageAction('mute', p.id)} />
               )}
-              {!p.audioEnabled && (
+              {!p.cameraOnly && !p.audioEnabled && (
                 <ActionBtn label="Ask Unmute" color="var(--success)" onClick={() => onStageAction('unmute', p.id)} />
               )}
               {onSpotlightParticipant && (
@@ -90,7 +90,7 @@ export function ParticipantManager({
               )}
               <ActionBtn label="Backstage" color="var(--warning)" onClick={() => onStageAction('move-to-backstage', p.id)} />
               <ActionBtn label="Hold" color="#fbbf24" onClick={() => onStageAction('move-to-green-room', p.id)} />
-              {p.role === 'guest' && (
+              {p.role === 'guest' && !p.cameraOnly && (
                 <ActionBtn label="Co-host" color="var(--accent)" onClick={() => onStageAction('promote-co-host', p.id)} />
               )}
               {p.role === 'co-host' && (

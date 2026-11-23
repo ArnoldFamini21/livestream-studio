@@ -679,6 +679,19 @@ report contains signed picture-to-sound offset for each trigger and the change
 between triggers. Both the largest absolute offset and the change must be under
 40 ms. This check complements the packet continuity and byte integrity tests.
 
+## Secondary camera seats
+
+In **Invite → Mobile Join**, choose **Secondary camera** and scan the QR code
+or copy the link. On the second device, name the angle, allow camera access
+and join. The camera waits for admission even when the studio normally lets
+guests join directly. Bring it on stage from the People panel to add it to the
+show.
+
+The second device sends video only and displays a silent local preview. It can
+switch between available cameras. Keep the camera page open until the take is
+saved. Each on-stage camera records its own ISO and uses the same browser
+backup and host-folder transfer as a guest recording.
+
 ## On-air QR codes
 
 Choose **Overlays → Add overlay → QR code**. Enter a destination URL, save

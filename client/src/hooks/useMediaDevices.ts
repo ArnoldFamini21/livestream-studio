@@ -61,9 +61,10 @@ function liveTrackCount(stream: MediaStream | null): number {
   return stream ? stream.getTracks().filter((track) => track.readyState === 'live').length : 0;
 }
 
-export function useMediaDevices() {
+export function useMediaDevices(cameraOnly = false) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [audioEnabled, setAudioEnabled] = useState(true);
+  const [audioEnabled, setAudioEnabled] = useState(!cameraOnly);
+  const preferredCameraKey = cameraOnly ? 'preferredSecondaryCameraDeviceId' : 'preferredVideoDeviceId';
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // What exactly failed (blocked, busy, missing) so the page can show how to fix it.
@@ -83,7 +84,7 @@ export function useMediaDevices() {
   const [recommendedVideoQuality] = useState<VideoQualityPresetId>(() => getRecommendedVideoQualityPresetId());
 
   const [selectedAudioDeviceId, setSelectedAudioDeviceId] = useState<string>(() => localStorage.getItem('preferredAudioDeviceId') || '');
-  const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>(() => localStorage.getItem('preferredVideoDeviceId') || '');
+  const [selectedVideoDeviceId, setSelectedVideoDeviceId] = useState<string>(() => localStorage.getItem(preferredCameraKey) || '');
   const [selectedAudioOutputDeviceId, setSelectedAudioOutputDeviceId] = useState<string>(() => localStorage.getItem('preferredAudioOutputDeviceId') || '');
 
   const streamRef = useRef<MediaStream | null>(null);
@@ -181,7 +182,9 @@ export function useMediaDevices() {
   ) => {
     if (!navigator.mediaDevices?.getUserMedia) {
       setError('Media devices not available. Please use HTTPS or localhost.');
-      setErrorProblem({ kind: 'insecure-context', device: 'both', message: 'Camera and microphone are not available here. Open the studio link over https.' });
+      setErrorProblem({ kind: 'insecure-context', device: cameraOnly ? 'camera' : 'both', message: cameraOnly
+        ? 'Camera access is unavailable here. Open the studio link over https.'
+        : 'Camera and microphone are not available here. Open the studio link over https.' });
       return null;
     }
     lastStartOptionsRef.current = { ...options };
@@ -198,11 +201,12 @@ export function useMediaDevices() {
       // Stop any existing tracks first
       stopCurrentStream();
 
-      const targetVideoId = videoDeviceId || localStorage.getItem('preferredVideoDeviceId');
+      const targetVideoId = videoDeviceId || localStorage.getItem(preferredCameraKey);
       const targetAudioId = audioDeviceId || localStorage.getItem('preferredAudioDeviceId');
 
       const createVideoConstraints = (deviceId?: string | null): MediaTrackConstraints => (
-        createVideoTrackConstraints(deviceId, nextVideoQuality)
+        { ...createVideoTrackConstraints(deviceId, nextVideoQuality),
+          ...(cameraOnly && !deviceId ? { facingMode: { ideal: 'environment' } } : {}) }
       );
       const createAudioConstraints = (deviceId?: string | null) => createAudioTrackConstraints(deviceId, nextAudioProcessing);
 
@@ -243,6 +247,14 @@ export function useMediaDevices() {
       // Camera and mic together, then each alone. The error that is kept is
       // the one that explains the problem, never a generic "no devices".
       const acquire = async (): Promise<AcquireResult> => {
+        if (cameraOnly) {
+          try {
+            const result = await tryMediaAttempts(videoOnlyAttempts);
+            return { ...result, problem: null };
+          } catch (error) {
+            return { stream: null, problem: createMediaAccessProblem(error, 'camera'), usedFallback: false };
+          }
+        }
         let avError: unknown;
         try {
           const result = await tryMediaAttempts(avAttempts);
@@ -297,7 +309,7 @@ export function useMediaDevices() {
       setErrorProblem(acquired.problem);
       setError(acquired.problem
         ? acquired.problem.message
-        : acquired.usedFallback ? 'Preferred device unavailable - using available camera and microphone' : null);
+        : acquired.usedFallback ? (cameraOnly ? 'Using another available camera' : 'Preferred device unavailable - using available camera and microphone') : null);
       const enhancedAudio = createEnhancedAudioStream(stream, nextAudioProcessing);
       stream = enhancedAudio.stream;
       adoptEnhancedAudio(enhancedAudio);
@@ -337,7 +349,7 @@ export function useMediaDevices() {
         const settings = activeVideoTrack.getSettings();
         const activeId = settings.deviceId || '';
         setSelectedVideoDeviceId(activeId);
-        if (activeId) localStorage.setItem('preferredVideoDeviceId', activeId);
+        if (activeId) localStorage.setItem(preferredCameraKey, activeId);
 
         // Bug fix #15: Add track.onended listener for video
         activeVideoTrack.onended = () => {
@@ -379,7 +391,7 @@ export function useMediaDevices() {
       console.error('Media device error:', err);
       return null;
     }
-  }, [enumerateDevices, setErrorProblem, stopCurrentStream]);
+  }, [cameraOnly, enumerateDevices, preferredCameraKey, setErrorProblem, stopCurrentStream]);
 
   /**
    * Add a camera or microphone track that is missing (blocked earlier, busy,
@@ -387,7 +399,7 @@ export function useMediaDevices() {
    * Resolves true when the track is now live and enabled.
    */
   const acquireMissingTrack = useCallback(async (kind: 'audio' | 'video'): Promise<boolean> => {
-    if (!navigator.mediaDevices?.getUserMedia) return false;
+    if ((cameraOnly && kind === 'audio') || !navigator.mediaDevices?.getUserMedia) return false;
     const device = kind === 'audio' ? 'microphone' : 'camera';
     if (!streamRef.current) {
       const previous = lastStartOptionsRef.current;
@@ -402,7 +414,7 @@ export function useMediaDevices() {
     if (switchingRef.current) return false;
     switchingRef.current = true;
     try {
-      const preferredId = localStorage.getItem(kind === 'audio' ? 'preferredAudioDeviceId' : 'preferredVideoDeviceId');
+      const preferredId = localStorage.getItem(kind === 'audio' ? 'preferredAudioDeviceId' : preferredCameraKey);
       const constraintsFor = (deviceId?: string | null): MediaStreamConstraints => (kind === 'audio'
         ? { audio: createAudioTrackConstraints(deviceId, audioProcessingOptionsRef.current) }
         : { video: createVideoTrackConstraints(deviceId, videoQualityRef.current) });
@@ -457,7 +469,7 @@ export function useMediaDevices() {
         const activeId = track.getSettings().deviceId || '';
         if (activeId) {
           setSelectedVideoDeviceId(activeId);
-          localStorage.setItem('preferredVideoDeviceId', activeId);
+          localStorage.setItem(preferredCameraKey, activeId);
         }
         setVideoEnabled(true);
       }
@@ -486,7 +498,7 @@ export function useMediaDevices() {
     } finally {
       switchingRef.current = false;
     }
-  }, [enumerateDevices, publishStreamUpdate, setErrorProblem, startMedia]);
+  }, [cameraOnly, enumerateDevices, preferredCameraKey, publishStreamUpdate, setErrorProblem, startMedia]);
 
   /** "Try again": request whatever is missing with the choices the page started with. */
   const retryMedia = useCallback(async (): Promise<boolean> => {
@@ -497,18 +509,17 @@ export function useMediaDevices() {
       return Boolean(next && liveTrackCount(next) > 0);
     }
     let ok = true;
-    if (!stream.getAudioTracks().some((track) => track.readyState === 'live')) ok = (await acquireMissingTrack('audio')) && ok;
+    if (!cameraOnly && !stream.getAudioTracks().some((track) => track.readyState === 'live')) ok = (await acquireMissingTrack('audio')) && ok;
     if (!stream.getVideoTracks().some((track) => track.readyState === 'live')) ok = (await acquireMissingTrack('video')) && ok;
     return ok;
-  }, [acquireMissingTrack, startMedia]);
+  }, [acquireMissingTrack, cameraOnly, startMedia]);
 
   // Switch audio input device
   const switchAudioDevice = useCallback(async (
     deviceId: string,
     options: Partial<AudioProcessingPreferences> = audioProcessingOptionsRef.current
   ) => {
-    if (!streamRef.current) return null;
-    if (switchingRef.current) return null;
+    if (cameraOnly || !streamRef.current || switchingRef.current) return null;
     switchingRef.current = true;
     const nextAudioProcessing = normalizeAudioProcessingPreferences(options);
     audioProcessingOptionsRef.current = nextAudioProcessing;
@@ -566,7 +577,7 @@ export function useMediaDevices() {
     } finally {
       switchingRef.current = false;
     }
-  }, [publishStreamUpdate]);
+  }, [cameraOnly, publishStreamUpdate]);
 
   const updateAudioProcessing = useCallback(async (preferences: AudioProcessingPreferences) => {
     const nextAudioProcessing = normalizeAudioProcessingPreferences(preferences);
@@ -621,7 +632,7 @@ export function useMediaDevices() {
       streamRef.current.addTrack(newVideoTrack);
       publishStreamUpdate();
       setSelectedVideoDeviceId(deviceId);
-      localStorage.setItem('preferredVideoDeviceId', deviceId);
+      localStorage.setItem(preferredCameraKey, deviceId);
       setError(null);
       setErrorProblem(null);
 
@@ -633,7 +644,7 @@ export function useMediaDevices() {
     } finally {
       switchingRef.current = false;
     }
-  }, [publishStreamUpdate]);
+  }, [preferredCameraKey, publishStreamUpdate, setErrorProblem]);
 
   const updateVideoQuality = useCallback(async (quality: VideoQualityPresetId) => {
     videoQualityRef.current = quality;
@@ -643,10 +654,10 @@ export function useMediaDevices() {
     const activeVideoTrack = streamRef.current?.getVideoTracks()[0];
     if (!streamRef.current || !activeVideoTrack || switchingRef.current) return null;
 
-    const activeDeviceId = selectedVideoDeviceId || activeVideoTrack.getSettings().deviceId || localStorage.getItem('preferredVideoDeviceId') || '';
+    const activeDeviceId = selectedVideoDeviceId || activeVideoTrack.getSettings().deviceId || localStorage.getItem(preferredCameraKey) || '';
     if (!activeDeviceId) return null;
     return switchVideoDevice(activeDeviceId, quality);
-  }, [selectedVideoDeviceId, switchVideoDevice]);
+  }, [preferredCameraKey, selectedVideoDeviceId, switchVideoDevice]);
 
   const stopMedia = useCallback(() => {
     stopCurrentStream();

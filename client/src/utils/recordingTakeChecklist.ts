@@ -17,8 +17,8 @@ export function expectedGuestTracks(participants: Iterable<Participant>): Expect
     if (participant.status !== 'on-stage' || participant.role === 'host' || participant.role === 'co-host') continue;
     const base = { participantId: participant.id, participantName: participant.name, origin: 'guest-transfer' as const };
     if (participant.videoEnabled) planned.push({ ...base, kind: 'iso', label: participant.name + ' ISO' });
-    if (participant.audioEnabled) planned.push({ ...base, kind: 'audio', label: participant.name + ' audio' });
-    if (participant.screenSharing) planned.push({ ...base, kind: 'screen', label: participant.name + ' screen' });
+    if (!participant.cameraOnly && participant.audioEnabled) planned.push({ ...base, kind: 'audio', label: participant.name + ' audio' });
+    if (!participant.cameraOnly && participant.screenSharing) planned.push({ ...base, kind: 'screen', label: participant.name + ' screen' });
   }
   return planned;
 }

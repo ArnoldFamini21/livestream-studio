@@ -318,6 +318,8 @@ export interface Participant {
   screenSharing: boolean;
   joinedAt: string;
   status: ParticipantStatus;
+  /** This guest joined as a dedicated silent camera. */
+  cameraOnly?: true;
   /** Optional name-tag subtitle a host set, e.g. "Author, The Long Game". */
   title?: string;
   /**
@@ -534,6 +536,7 @@ export interface JoinRoomPayload {
   roomId: string;
   name: string;
   role: ParticipantRole;
+  cameraOnly?: true;
   hostToken?: string;
   coHostInviteToken?: string;
   guestInviteToken?: string;

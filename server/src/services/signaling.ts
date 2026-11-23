@@ -1958,6 +1958,7 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   const requestedRole: Participant['role'] =
     payload.role === 'host' || payload.role === 'co-host' ? payload.role : 'guest';
   const joinSessionId = normalizeJoinSessionId(payload.joinSessionId);
+  const cameraOnly = requestedRole === 'guest' && payload.cameraOnly === true;
   // Sanitize and validate participant name
   const name = (typeof payload.name === 'string' ? payload.name : '').trim().replace(/[\x00-\x1F\x7F]/g, '').slice(0, MAX_PARTICIPANT_NAME_LENGTH) || 'Anonymous';
   let knownRoom = rooms.get(roomId);
@@ -1982,7 +1983,7 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   // A dropped connection coming back within the grace window keeps its seat:
   // same participant id, role and place, so healthy media stays connected.
   const resumable = findResumableEntry(roomState, payload.resumeToken);
-  if (resumable) {
+  if (resumable && Boolean(resumable.participant.cameraOnly) === cameraOnly) {
     // A reload may bring a newer (or older) client into the same seat.
     applyClientCapabilities(resumable.participant, payload.capabilities);
     resumeSeat(ws, roomId, roomState, resumable, ip);
@@ -2038,7 +2039,7 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
       rejectJoinAttempt(ws, 'Co-host invite link is invalid or expired', 'CO_HOST_INVITE_INVALID');
       return;
     }
-  } else if (requestedRole === 'guest' && hasRedeemedInvite(roomState, joinSessionId, 'co-host', nowMs)) {
+  } else if (requestedRole === 'guest' && !cameraOnly && hasRedeemedInvite(roomState, joinSessionId, 'co-host', nowMs)) {
     // A guest promoted to co-host whose browser still says "guest".
     effectiveRole = 'co-host';
   }
@@ -2161,7 +2162,7 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
   } else if (returningStatus) {
     status = returningStatus;
   } else {
-    status = audienceCall || roomState.room.settings.greenRoomEnabled ? 'green-room' : 'on-stage';
+    status = cameraOnly || audienceCall || roomState.room.settings.greenRoomEnabled ? 'green-room' : 'on-stage';
   }
 
   // The host always gets a seat. Everyone else needs a free stage/backstage
@@ -2190,7 +2191,8 @@ async function handleJoinRoom(ws: WebSocket, payload: JoinRoomPayload) {
     id: nanoid(8),
     name,
     role: effectiveRole,
-    audioEnabled: true,
+    ...(cameraOnly ? { cameraOnly: true as const } : {}),
+    audioEnabled: !cameraOnly,
     videoEnabled: true,
     screenSharing: false,
     joinedAt: new Date().toISOString(),
@@ -2355,6 +2357,10 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       notifyMediaServerSfuMembership('revoke-participant', mapping.roomId, target.participant.id, 'Moved to green room');
       break;
     case 'promote-co-host':
+      if (target.participant.cameraOnly) {
+        sendError(ws, 'A secondary camera cannot become a co-host.', 'INVALID_STAGE_ACTION');
+        return;
+      }
       target.participant.role = 'co-host';
       if (!roomState.room.coHostIds.includes(target.participant.id)) {
         roomState.room.coHostIds.push(target.participant.id);
@@ -2394,6 +2400,7 @@ function handleStageAction(ws: WebSocket, payload: StageActionPayload) {
       });
       break;
     case 'unmute':
+      if (target.participant.cameraOnly) return;
       send(target.ws, {
         type: 'participant-notification',
         payload: {
@@ -3956,9 +3963,11 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
   }
 
   const entry = roomState.participants.get(mapping.participantId);
-  const screenSharing = entry?.participant.status === 'on-stage' ? payload.screenSharing : false;
+  const cameraOnly = entry?.participant.cameraOnly === true;
+  const audioEnabled = !cameraOnly && payload.audioEnabled;
+  const screenSharing = !cameraOnly && entry?.participant.status === 'on-stage' && payload.screenSharing;
   if (entry) {
-    entry.participant.audioEnabled = payload.audioEnabled;
+    entry.participant.audioEnabled = audioEnabled;
     entry.participant.videoEnabled = payload.videoEnabled;
     entry.participant.screenSharing = screenSharing;
   }
@@ -3971,7 +3980,7 @@ function handleMediaStateChange(ws: WebSocket, payload: MediaStatePayload) {
   if (entry) entry.screenShareStreamId = screenStreamId;
   const authoritativePayload: MediaStatePayload = {
     participantId: mapping.participantId,
-    audioEnabled: payload.audioEnabled,
+    audioEnabled,
     videoEnabled: payload.videoEnabled,
     screenSharing,
     ...(screenStreamId ? { screenStreamId } : {}),

@@ -211,6 +211,7 @@ function PersonRow({
           <span>
             {spotlight
               ? 'Spotlighted'
+              : person.cameraOnly ? 'Secondary camera'
               : person.role === 'host'
                 ? 'Host'
                 : person.role === 'co-host'
@@ -218,7 +219,7 @@ function PersonRow({
                   : !person.videoEnabled
                     ? 'Camera off'
                     : 'Guest'}
-            {!person.audioEnabled ? ' · Muted' : ''}
+            {!person.audioEnabled && !person.cameraOnly ? ' · Muted' : ''}
           </span>
           {health &&
             (health.quality === 'poor' || health.quality === 'fair') && (
@@ -240,7 +241,7 @@ function PersonRow({
         </div>
         {manageable &&
           (person.status === 'on-stage' ? (
-            <button
+            !person.cameraOnly && <button
               type="button"
               className={`people-icon${!person.audioEnabled ? ' is-muted' : ''}`}
               title={person.audioEnabled ? 'Mute microphone' : 'Ask to unmute'}
@@ -350,7 +351,7 @@ function PersonRow({
                 {spotlight ? 'Clear spotlight' : 'Spotlight'}
               </button>
             )}
-            {!isMe && (
+            {!isMe && !person.cameraOnly && (
               <button
                 type="button"
                 onClick={() => {
@@ -408,7 +409,7 @@ function PersonRow({
                     Move to waiting room
                   </button>
                 )}
-                <button
+                {!person.cameraOnly && <button
                   type="button"
                   onClick={() =>
                     action(
@@ -419,7 +420,7 @@ function PersonRow({
                   }
                 >
                   {person.role === 'co-host' ? 'Make guest' : 'Make co-host'}
-                </button>
+                </button>}
                 <button
                   type="button"
                   className="people-danger"

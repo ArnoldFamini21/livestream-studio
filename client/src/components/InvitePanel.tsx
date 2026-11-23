@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { buildStudioCalendarInvite, type RoomRegistrationSettings } from '@studio/shared';
 import type { StudioWatchEvents } from '../hooks/useStudioWatchEvents.ts';
+import { buildSecondaryCameraInvite } from '../utils/secondaryCamera.ts';
 import { buildPrivateWatchUrl } from '../utils/watchAccess.ts';
 import { buildGuestInviteDetails, buildGuestInviteEmailHref } from '../utils/inviteLinks.ts';
 
@@ -29,7 +30,7 @@ interface InvitePanelProps {
   onClose: () => void;
 }
 
-type CopyTarget = 'link' | 'details' | 'guest-secure' | 'co-host' | 'qr-image' | 'watch' | null;
+type CopyTarget = 'link' | 'camera' | 'details' | 'guest-secure' | 'co-host' | 'qr-image' | 'watch' | null;
 
 async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
@@ -139,6 +140,8 @@ export function InvitePanel({
   const [coHostInvite, setCoHostInvite] = useState<{ inviteUrl: string; expiresAt: string } | null>(null);
   const [coHostError, setCoHostError] = useState<string | null>(null);
   const [isCreatingCoHostInvite, setIsCreatingCoHostInvite] = useState(false);
+  const [cameraInviteMode, setCameraInviteMode] = useState(false);
+  const mobileInviteUrl = useMemo(() => cameraInviteMode ? buildSecondaryCameraInvite(inviteUrl) : inviteUrl, [cameraInviteMode, inviteUrl]);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
   const [guestEmail, setGuestEmail] = useState('');
@@ -279,7 +282,7 @@ export function InvitePanel({
     setQrDataUrl(null);
     setQrError(null);
 
-    QRCode.toDataURL(inviteUrl, {
+    QRCode.toDataURL(mobileInviteUrl, {
       errorCorrectionLevel: 'M',
       margin: 2,
       width: 224,
@@ -298,7 +301,7 @@ export function InvitePanel({
     return () => {
       cancelled = true;
     };
-  }, [inviteUrl]);
+  }, [mobileInviteUrl]);
 
   const handleCopy = async (target: Exclude<CopyTarget, null>, text: string) => {
     try {
@@ -323,7 +326,7 @@ export function InvitePanel({
 
   const handleDownloadQr = () => {
     if (!qrDataUrl) return;
-    downloadDataUrl(qrDataUrl, `${safeFileName(roomName)}_guest_invite_qr.png`);
+    downloadDataUrl(qrDataUrl, `${safeFileName(roomName)}_${cameraInviteMode ? 'camera' : 'guest'}_invite_qr.png`);
   };
 
   const handleDownloadCalendar = () => {
@@ -642,7 +645,7 @@ export function InvitePanel({
         <div style={styles.qrCard}>
           <div style={styles.qrPreview}>
             {qrDataUrl ? (
-              <img src={qrDataUrl} alt="Guest invite QR code" style={styles.qrImage} />
+              <img src={qrDataUrl} alt={cameraInviteMode ? 'Secondary camera invite QR code' : 'Guest invite QR code'} style={styles.qrImage} />
             ) : (
               <div style={styles.qrPlaceholder}>
                 {qrError ? (
@@ -659,9 +662,22 @@ export function InvitePanel({
           </div>
 
           <div style={styles.qrContent}>
-            <span style={styles.linkLabel}>Mobile Join</span>
-            <p style={styles.qrText}>Guests can scan this code to open the invite link on their phone.</p>
+            <label style={styles.linkLabel} htmlFor="mobile-invite-type">Mobile Join</label>
+            <select id="mobile-invite-type" value={cameraInviteMode ? 'camera' : 'guest'} onChange={event => {
+              setQrDataUrl(null);
+              setCameraInviteMode(event.target.value === 'camera');
+              setCopied(null);
+            }}>
+              <option value="guest">Guest</option>
+              <option value="camera">Secondary camera</option>
+            </select>
+            <p style={styles.qrText}>{cameraInviteMode
+              ? 'Scan this code with the phone you want to use as a second camera, or open the link on another computer.'
+              : 'Guests can scan this code to open the invite link on their phone.'}</p>
             <div style={styles.qrActions}>
+              {cameraInviteMode && <button type="button" style={styles.qrActionBtn} onClick={() => void handleCopy('camera', mobileInviteUrl)}>
+                {copied === 'camera' ? 'Copied link' : 'Copy camera link'}
+              </button>}
               <button
                 type="button"
                 style={{ ...styles.qrActionBtn, ...(copied === 'qr-image' ? styles.actionBtnDone : {}) }}
