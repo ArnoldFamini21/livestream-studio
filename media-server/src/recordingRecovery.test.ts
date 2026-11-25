@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { RECORDING_RECOVERY_TTL_MS, recordingRecoveryHostScope, type RecordingRecoveryTrack } from '@studio/shared';
 import { getLiveStreamTokenSecret, signLiveStreamToken } from './auth.js';
 import { createRecordingRecoveryHandler } from './recordingRecovery.js';
+import { createRecoveryStorageResolver } from './recordingRecoveryStorage.js';
 
 const origin = 'https://studio.example';
 const secret = getLiveStreamTokenSecret()!;
@@ -229,4 +230,46 @@ test('recovery fails closed when storage is public, unconfigured or lacks requir
   assert.deepEqual(await ready(storage.env), { ready: false });
   storage.ignoreConditions();
   assert.deepEqual(await ready(storage.env), { ready: false });
+});
+
+test('only the official R2 account endpoint and its exact unsigned-read error qualify a 400 as private', async (t) => {
+  const storage = await startObjectStore();
+  t.after(storage.server.close);
+  const account = '0123456789abcdef0123456789abcdef';
+  const endpoint = `https://${account}.r2.cloudflarestorage.com`;
+  const denial = '<?xml version="1.0" encoding="UTF-8"?><Error><Code>InvalidArgument</Code><Message>Authorization</Message></Error>';
+  const networkFetch = globalThis.fetch;
+  let anonymous = (_path: string) => new Response(denial, { status: 400, headers: { 'content-type': 'application/xml' } });
+  t.mock.method(globalThis, 'fetch', (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const url = new URL(String(input));
+    if (!new Headers(init?.headers).has('authorization')) return Promise.resolve(anonymous(url.pathname));
+    return networkFetch(storage.server.url + url.pathname, init);
+  });
+  const ready = async (storageEndpoint = endpoint) =>
+    Boolean(await createRecoveryStorageResolver({ ...storage.env, RECORDING_STORAGE_ENDPOINT: storageEndpoint })());
+
+  assert.equal(await ready(), true);
+  for (const otherEndpoint of [
+    'https://s3.example', `${endpoint}.example`, `https://bucket.${account}.r2.cloudflarestorage.com`,
+    'https://not-an-account.r2.cloudflarestorage.com', `${endpoint}:9443`, endpoint.replace('https:', 'http:'),
+  ]) {
+    assert.equal(await ready(otherEndpoint), false, otherEndpoint);
+  }
+  const invalidResponses = [
+    { body: '', status: 400 },
+    { body: '<Error>', status: 400 },
+    { body: denial.replace('InvalidArgument', 'BadRequest'), status: 400 },
+    { body: denial.replace('Authorization', 'MissingKey'), status: 400 },
+    { body: denial.replace('</Error>', '<Extra/></Error>'), status: 400 },
+    { body: denial, status: 400, contentType: 'text/html' },
+    { body: denial, status: 200 },
+  ];
+  for (const { body, status, contentType } of invalidResponses) {
+    anonymous = () => new Response(body, { status, headers: { 'content-type': contentType ?? 'application/xml' } });
+    assert.equal(await ready(), false, `${status} ${body}`);
+  }
+  anonymous = (path) => path.endsWith('/take.json')
+    ? new Response(denial, { status: 400, headers: { 'content-type': 'application/xml' } })
+    : new Response('public chunk', { status: 200 });
+  assert.equal(await ready(), false, 'both existing objects must reject anonymous reads');
 });
