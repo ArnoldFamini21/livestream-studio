@@ -6,6 +6,10 @@ const METADATA_MAX_BYTES = 256 * 1024;
 const EMPTY_SHA256 = createHash('sha256').digest('hex');
 const VERSION_PATTERN = /^"[A-Za-z0-9+/=_-]{1,180}"$/;
 const PRIVATE_PROBE = 'studio-private-recording-recovery-v1';
+const R2_ACCOUNT_HOST = /^[a-f0-9]{32}\.r2\.cloudflarestorage\.com$/;
+const R2_UNSIGNED_READ_ERROR = Buffer.from(
+  '<?xml version="1.0" encoding="UTF-8"?><Error><Code>InvalidArgument</Code><Message>Authorization</Message></Error>',
+);
 
 function configuredRecoveryStorage(env: NodeJS.ProcessEnv) {
   const config = getRecordingObjectStorageConfig(env);
@@ -117,6 +121,12 @@ export class RecordingRecoveryStorage {
   private async rejectsAnonymousReads(key: string) {
     const { url } = signObjectStorageRequest(this.config, { method: 'GET', key, payloadSha256: EMPTY_SHA256 });
     const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+    // R2's account endpoint returns this specific 400 for unsigned object GETs.
+    if (response.status === 400 && url.protocol === 'https:' && R2_ACCOUNT_HOST.test(url.host) &&
+        response.headers.get('content-type') === 'application/xml') {
+      const body = await readLimited(response, R2_UNSIGNED_READ_ERROR.length);
+      return body.equals(R2_UNSIGNED_READ_ERROR);
+    }
     await response.body?.cancel();
     return [401, 403, 404].includes(response.status);
   }
